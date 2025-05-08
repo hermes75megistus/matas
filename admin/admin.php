@@ -147,7 +147,7 @@ class Matas_Admin {
         }
     }
     
-    public function save_unvan() {
+ public function save_unvan() {
         // Güvenlik kontrolü
         check_ajax_referer('matas_admin_nonce', 'nonce');
         
@@ -172,6 +172,28 @@ class Matas_Admin {
         if ($unvan_id > 0) {
             // Güncelleme
             $result = $wpdb->update(
+                $wpdb->prefix . 'matas_unvan_bilgileri',
+                array(
+                    'unvan_kodu' => $unvan_kodu,
+                    'unvan_adi' => $unvan_adi,
+                    'ekgosterge' => $ekgosterge,
+                    'ozel_hizmet' => $ozel_hizmet,
+                    'yan_odeme' => $yan_odeme,
+                    'is_guclugu' => $is_guclugu,
+                    'makam_tazminat' => $makam_tazminat,
+                    'egitim_tazminat' => $egitim_tazminat
+                ),
+                array('id' => $unvan_id)
+            );
+            
+            if ($result !== false) {
+                wp_send_json_success(array('message' => 'Ünvan bilgileri başarıyla güncellendi.'));
+            } else {
+                wp_send_json_error(array('message' => 'Ünvan bilgileri güncellenirken bir hata oluştu.'));
+            }
+        } else {
+            // Yeni ünvan ekle
+            $result = $wpdb->insert(
                 $wpdb->prefix . 'matas_unvan_bilgileri',
                 array(
                     'unvan_kodu' => $unvan_kodu,
