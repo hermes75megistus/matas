@@ -1,4 +1,3 @@
- 
 /* MATAS - Maaş Takip Sistemi Admin CSS */
 .matas-dashboard {
     display: grid;
@@ -47,3 +46,124 @@
 }
 
 .matas-card a:hover {
+    color: #0d47a1;
+    text-decoration: underline;
+}
+
+.matas-container {
+    margin-top: 20px;
+}
+
+.matas-form-row {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 0 -10px 15px;
+}
+
+.matas-form-group {
+    flex: 1;
+    min-width: 250px;
+    padding: 0 10px;
+    margin-bottom: 15px;
+}
+
+.matas-form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+}
+
+.matas-form-actions {
+    margin-top: 20px;
+}
+
+.matas-status {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 3px;
+    background: #e5e5e5;
+    color: #777;
+}
+
+.matas-status.active {
+    background: #5cb85c;
+    color: white;
+}
+
+.matas-message {
+    padding: 10px 15px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.matas-message.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.matas-message.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.matas-message.info {
+    background-color: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+.matas-message.warning {
+    background-color: #fff3cd;
+    color: #856404;
+    border: 1px solid #ffeeba;
+}
+
+.matas-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.matas-table th,
+.matas-table td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.matas-table th {
+    font-weight: 600;
+    color: #333;
+}
+
+.wp-list-table .button-small {
+    margin-right: 5px;
+}
+
+.spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    margin-right: 5px;
+    background: url(../images/spinner.gif) no-repeat;
+    background-size: 20px 20px;
+    vertical-align: middle;
+    opacity: 0.7;
+}
+
+/* Responsive Tasarım */
+@media screen and (max-width: 782px) {
+    .matas-dashboard {
+        grid-template-columns: 1fr;
+    }
+    
+    .matas-form-row {
+        flex-direction: column;
+    }
+    
+    .matas-form-group {
+        min-width: 100%;
+    }
+}
