@@ -1,4 +1,4 @@
- (function($) {
+(function($) {
     'use strict';
     
     // DOM yüklendikten sonra çalışacak fonksiyonlar
@@ -130,7 +130,7 @@
     
     // Derece değiştiğinde kademe seçeneklerini güncelle
     function kademeOptionlariGuncelle() {
-        const derece = $('#derece').val();
+        const derece = parseInt($('#derece').val());
         
         if (!derece) return;
         
@@ -138,13 +138,13 @@
         let maxKademe = 9;
         
         // 1. ve 2. dereceler için kademe sayısı 8 olarak belirlenir
-        if (derece == 1 || derece == 2) {
+        if (derece === 1 || derece === 2) {
             maxKademe = 8;
         }
         
         // Kademe selectbox'ını güncelle
         const $kademe = $('#kademe');
-        let currentVal = $kademe.val();
+        const currentVal = $kademe.val();
         
         // Kademe seçeneklerini temizle
         $kademe.empty();
@@ -172,15 +172,15 @@
     
     // Çocuk durumu alanlarını güncelle
     function cocukDurumuGuncelle() {
-        const cocukSayisi = parseInt($('#cocuk_sayisi').val());
+        const cocukSayisi = parseInt($('#cocuk_sayisi').val()) || 0;
         
         if (cocukSayisi > 0) {
             $('#cocuk_06_group, #engelli_cocuk_group, #ogrenim_cocuk_group').show();
             
             // Çocuk sayısı kontrolü
-            const cocuk06 = parseInt($('#cocuk_06').val() || 0);
-            const engelliCocuk = parseInt($('#engelli_cocuk').val() || 0);
-            const ogrenimCocuk = parseInt($('#ogrenim_cocuk').val() || 0);
+            const cocuk06 = parseInt($('#cocuk_06').val()) || 0;
+            const engelliCocuk = parseInt($('#engelli_cocuk').val()) || 0;
+            const ogrenimCocuk = parseInt($('#ogrenim_cocuk').val()) || 0;
             
             // Toplam çocuk sayısını kontrol et
             if (cocuk06 + engelliCocuk + ogrenimCocuk > cocukSayisi) {
@@ -225,10 +225,10 @@
             hizmet_yili: $('#hizmet_yili').val(),
             medeni_hal: $('#medeni_hal').val(),
             es_calisiyor: $('#es_calisiyor').val(),
-            cocuk_sayisi: $('#cocuk_sayisi').val(),
-            cocuk_06: $('#cocuk_06').val(),
-            engelli_cocuk: $('#engelli_cocuk').val(),
-            ogrenim_cocuk: $('#ogrenim_cocuk').val(),
+            cocuk_sayisi: $('#cocuk_sayisi').val() || 0,
+            cocuk_06: $('#cocuk_06').val() || 0,
+            engelli_cocuk: $('#engelli_cocuk').val() || 0,
+            ogrenim_cocuk: $('#ogrenim_cocuk').val() || 0,
             egitim_durumu: $('#egitim_durumu').val(),
             dil_seviyesi: $('#dil_seviyesi').val(),
             dil_kullanimi: $('#dil_kullanimi').val(),
@@ -237,6 +237,7 @@
             asgari_gecim_indirimi: $('#asgari_gecim_indirimi').is(':checked') ? 1 : 0,
             kira_yardimi: $('#kira_yardimi').is(':checked') ? 1 : 0,
             sendika_uyesi: $('#sendika_uyesi').is(':checked') ? 1 : 0,
+            action: 'matas_hesapla',
             nonce: matas_ajax.nonce
         };
         
@@ -244,10 +245,7 @@
         $.ajax({
             url: matas_ajax.ajax_url,
             type: 'POST',
-            data: {
-                action: 'matas_hesapla',
-                ...formData
-            },
+            data: formData,
             success: function(response) {
                 if (response.success) {
                     // Sonuçları göster
@@ -256,8 +254,9 @@
                     alert(response.data.message || 'Hesaplama sırasında bir hata oluştu.');
                 }
             },
-            error: function() {
-                alert('Sunucu ile iletişim kurulurken bir hata oluştu.');
+            error: function(xhr, status, error) {
+                console.error("AJAX hatası:", error);
+                alert('Sunucu ile iletişim kurulurken bir hata oluştu: ' + error);
             },
             complete: function() {
                 // Loading kaldır
@@ -593,53 +592,53 @@
         
         $('#matas-backup-list').html(html);
         
-        // Geri yükleme butonlarına olay dinleyicisi ekle
-        $('.matas-backup-restore').on('click', function() {
-            const index = $(this).data('index');
-            const backups = JSON.parse(localStorage.getItem('matas_backups')) || [];
-            
-            if (index >= 0 && index < backups.length) {
-                const formData = backups[index];
-                
-                // Form verilerini yükle
-                for (const key in formData) {
-                    if (key === 'isim' || key === 'tarih') continue;
-                    
-                    if (['gorev_tazminati', 'gelistirme_odenegi', 'asgari_gecim_indirimi', 'kira_yardimi', 'sendika_uyesi'].includes(key)) {
-                        $('#' + key).prop('checked', formData[key]);
-                    } else {
-                        $('#' + key).val(formData[key]);
-                    }
-                }
-                
-                // Select elementlerini güncelle
-                $('#derece, #medeni_hal, #cocuk_sayisi, #dil_seviyesi').trigger('change');
-                
-                // Hesaplama sekmesine geç
-                openTab('hesaplama');
-                
-                // Kullanıcıya bilgi ver
-                alert('Yedek başarıyla geri yüklendi.');
-            }
-        });
-        
-        // Silme butonlarına olay dinleyicisi ekle
-        $('.matas-backup-delete').on('click', function() {
-            if (confirm('Bu yedeği silmek istediğinize emin misiniz?')) {
-                const index = $(this).data('index');
-                const backups = JSON.parse(localStorage.getItem('matas_backups')) || [];
-                
-                if (index >= 0 && index < backups.length) {
-                    backups.splice(index, 1);
-                    localStorage.setItem('matas_backups', JSON.stringify(backups));
-                    
-                    // Listeyi güncelle
-                    loadBackupList();
-                    
-                    // Kullanıcıya bilgi ver
-                    alert('Yedek başarıyla silindi.');
-                }
-            }
-        });
-    }
+// Geri yükleme butonlarına olay dinleyicisi ekle
+       $('.matas-backup-restore').on('click', function() {
+           const index = $(this).data('index');
+           const backups = JSON.parse(localStorage.getItem('matas_backups')) || [];
+           
+           if (index >= 0 && index < backups.length) {
+               const formData = backups[index];
+               
+               // Form verilerini yükle
+               for (const key in formData) {
+                   if (key === 'isim' || key === 'tarih') continue;
+                   
+                   if (['gorev_tazminati', 'gelistirme_odenegi', 'asgari_gecim_indirimi', 'kira_yardimi', 'sendika_uyesi'].includes(key)) {
+                       $('#' + key).prop('checked', formData[key]);
+                   } else {
+                       $('#' + key).val(formData[key]);
+                   }
+               }
+               
+               // Select elementlerini güncelle
+               $('#derece, #medeni_hal, #cocuk_sayisi, #dil_seviyesi').trigger('change');
+               
+               // Hesaplama sekmesine geç
+               openTab('hesaplama');
+               
+               // Kullanıcıya bilgi ver
+               alert('Yedek başarıyla geri yüklendi.');
+           }
+       });
+       
+       // Silme butonlarına olay dinleyicisi ekle
+       $('.matas-backup-delete').on('click', function() {
+           if (confirm('Bu yedeği silmek istediğinize emin misiniz?')) {
+               const index = $(this).data('index');
+               const backups = JSON.parse(localStorage.getItem('matas_backups')) || [];
+               
+               if (index >= 0 && index < backups.length) {
+                   backups.splice(index, 1);
+                   localStorage.setItem('matas_backups', JSON.stringify(backups));
+                   
+                   // Listeyi güncelle
+                   loadBackupList();
+                   
+                   // Kullanıcıya bilgi ver
+                   alert('Yedek başarıyla silindi.');
+               }
+           }
+       });
+   }
 })(jQuery);
