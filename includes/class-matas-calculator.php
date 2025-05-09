@@ -125,7 +125,7 @@ class Matas_Calculator {
             ARRAY_A
         );
         
-// Vergi dilimleri yoksa varsayılan değerleri kullan
+        // Vergi dilimleri yoksa varsayılan değerleri kullan
         if (empty($this->vergiler)) {
             $this->vergiler = array(
                 array('yil' => $current_year, 'dilim' => 1, 'alt_limit' => 0, 'ust_limit' => 70000, 'oran' => 15),
@@ -467,7 +467,7 @@ class Matas_Calculator {
         return $is_guclugu * $yan_odeme_katsayi;
     }
 
-    /**
+/**
      * Dil tazminatı hesaplar
      *
      * @param string $dil_seviyesi Dil seviyesi (a, b, c)
@@ -531,19 +531,19 @@ class Matas_Calculator {
     }
 
     /**
- * Geliştirme ödeneği hesaplar
- *
- * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
- * @param float $taban_ayligi Taban aylığı
- * @param float $ek_gosterge_tutari Ek gösterge tutarı
- * @return float Geliştirme ödeneği tutarı
- */
-private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari) {
-    if (!$gelistirme_odenegi) return 0;
-    // Örnek oran - gerçek projede bir tabloda saklanabilir
-    $gelistirme_orani = 0.10;
-    return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
-} // Missing closing brace added here
+     * Geliştirme ödeneği hesaplar
+     *
+     * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
+     * @param float $taban_ayligi Taban aylığı
+     * @param float $ek_gosterge_tutari Ek gösterge tutarı
+     * @return float Geliştirme ödeneği tutarı
+     */
+    private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari) {
+        if (!$gelistirme_odenegi) return 0;
+        // Örnek oran - gerçek projede bir tabloda saklanabilir
+        $gelistirme_orani = 0.10;
+        return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
+    }
 
     /**
      * Makam tazminatı hesaplar
