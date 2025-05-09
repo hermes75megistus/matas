@@ -174,7 +174,7 @@ class Matas_Admin {
      */
     public function save_katsayilar() {
         // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
+        if (!check_ajax_referer('matas_admin_nonce', 'nonce')) {
             wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
             return;
         }
