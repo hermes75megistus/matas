@@ -668,7 +668,7 @@ class Matas_Admin {
     /**
      * Ünvan detaylarını getirme AJAX işleyicisi
      */
-      public function get_unvan() {
+public function get_unvan() {
         // Güvenlik kontrolü
         if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
             wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
