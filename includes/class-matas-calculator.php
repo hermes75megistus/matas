@@ -530,19 +530,20 @@ class Matas_Calculator {
         return ($taban_ayligi + $ek_gosterge_tutari) * $egitim_tazminat_orani;
     }
 
-    /**
-     * Geliştirme ödeneği hesaplar
-     *
-     * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @return float Geliştirme ödeneği tutarı
-     */
-    private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari) {
-        if (!$gelistirme_odenegi) return 0;
-        // Örnek oran - gerçek projede bir tabloda saklanabilir
-        $gelistirme_orani = 0.10;
-        return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
+   /**
+ * Geliştirme ödeneği hesaplar
+ *
+ * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
+ * @param float $taban_ayligi Taban aylığı
+ * @param float $ek_gosterge_tutari Ek gösterge tutarı
+ * @return float Geliştirme ödeneği tutarı
+ */
+private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari) {
+    if (!$gelistirme_odenegi) return 0;
+    // Örnek oran - gerçek projede bir tabloda saklanabilir
+    $gelistirme_orani = 0.10;
+    return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
+} // Kapanış parantezi eklendi
 
     /**
      * Makam tazminatı hesaplar
