@@ -61,9 +61,9 @@ class Matas {
         $this->loader->add_action('wp_enqueue_scripts', $plugin_shortcode, 'enqueue_styles');
         $this->loader->add_action('wp_enqueue_scripts', $plugin_shortcode, 'enqueue_scripts');
         
-        // AJAX işleyicileri
+        // AJAX işleyicileri - düzeltilmiş
         $this->loader->add_action('wp_ajax_matas_hesapla', $plugin_shortcode, 'calculate_salary');
-        $this->loader->add_action('wp_ajax_nopriv_matas_hesapla', $plugin_shortcode, 'calculate_salary');
+        $this->loader->add_action('wp_ajax_nopriv_matas_hesapla', $plugin_shortcode, 'calculate_salary'); // Giriş yapmamış kullanıcılar için
     }
     
     public function run() {
