@@ -64,7 +64,7 @@ class Matas_Shortcode {
         // Nonce kontrolü
         check_ajax_referer('matas_calculator_nonce', 'nonce');
         
-        // Form verilerini al
+        // Form verilerini al ve sanitize et
         $params = array();
         $form_fields = array(
             'unvan', 'derece', 'kademe', 'hizmet_yili', 'medeni_hal', 'es_calisiyor',
@@ -75,7 +75,12 @@ class Matas_Shortcode {
         
         foreach ($form_fields as $field) {
             if (isset($_POST[$field])) {
-                $params[$field] = sanitize_text_field($_POST[$field]);
+                if (in_array($field, array('unvan', 'medeni_hal', 'es_calisiyor', 'egitim_durumu', 'dil_seviyesi', 'dil_kullanimi'))) {
+                    $params[$field] = sanitize_text_field($_POST[$field]);
+                } elseif (in_array($field, array('derece', 'kademe', 'hizmet_yili', 'cocuk_sayisi', 'cocuk_06', 'engelli_cocuk', 'ogrenim_cocuk',
+                                             'gorev_tazminati', 'gelistirme_odenegi', 'asgari_gecim_indirimi', 'kira_yardimi', 'sendika_uyesi'))) {
+                    $params[$field] = intval($_POST[$field]);
+                }
             }
         }
         
@@ -86,7 +91,12 @@ class Matas_Shortcode {
         if ($result['success']) {
             wp_send_json_success($result);
         } else {
-            wp_send_json_error($result);
+            wp_send_json_error(array(
+                'success' => false,
+                'message' => $result['message']
+            ));
         }
+        
+        wp_die(); // AJAX işlemini sonlandır
     }
 }
