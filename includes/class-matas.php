@@ -1,9 +1,36 @@
 <?php
+/**
+ * MATAS ana sınıfı
+ * 
+ * @package MATAS
+ * @since 1.0.0
+ */
+
 class Matas {
+    /**
+     * Loader nesnesi
+     *
+     * @var Matas_Loader
+     */
     protected $loader;
+    
+    /**
+     * Eklenti ismi
+     *
+     * @var string
+     */
     protected $plugin_name;
+    
+    /**
+     * Eklenti versiyonu
+     *
+     * @var string
+     */
     protected $version;
 
+    /**
+     * Sınıfı başlat
+     */
     public function __construct() {
         $this->version = MATAS_VERSION;
         $this->plugin_name = 'matas';
@@ -12,7 +39,9 @@ class Matas {
         $this->define_admin_hooks();
         $this->define_public_hooks();
     }
-    
+/**
+     * Bağımlılıkları yükle
+     */
     private function load_dependencies() {
         require_once MATAS_PLUGIN_DIR . 'includes/class-matas-loader.php';
         require_once MATAS_PLUGIN_DIR . 'includes/class-matas-calculator.php';
@@ -22,9 +51,13 @@ class Matas {
         $this->loader = new Matas_Loader();
     }
     
+    /**
+     * Admin kancalarını tanımla
+     */
     private function define_admin_hooks() {
         $plugin_admin = new Matas_Admin($this->get_plugin_name(), $this->get_version());
         
+        // Admin stil ve script yüklemeleri
         $this->loader->add_action('admin_enqueue_scripts', $plugin_admin, 'enqueue_styles');
         $this->loader->add_action('admin_enqueue_scripts', $plugin_admin, 'enqueue_scripts');
         $this->loader->add_action('admin_menu', $plugin_admin, 'add_plugin_admin_menu');
@@ -51,6 +84,9 @@ class Matas {
         $this->loader->add_action('wp_ajax_matas_load_default_sosyal_yardimlar', $plugin_admin, 'load_default_sosyal_yardimlar');
     }
     
+    /**
+     * Public kancalarını tanımla
+     */
     private function define_public_hooks() {
         $plugin_shortcode = new Matas_Shortcode($this->get_plugin_name(), $this->get_version());
         
@@ -61,19 +97,41 @@ class Matas {
         $this->loader->add_action('wp_enqueue_scripts', $plugin_shortcode, 'enqueue_styles');
         $this->loader->add_action('wp_enqueue_scripts', $plugin_shortcode, 'enqueue_scripts');
         
-        // AJAX işleyicileri - düzeltilmiş
+        // AJAX işleyicileri
         $this->loader->add_action('wp_ajax_matas_hesapla', $plugin_shortcode, 'calculate_salary');
         $this->loader->add_action('wp_ajax_nopriv_matas_hesapla', $plugin_shortcode, 'calculate_salary'); // Giriş yapmamış kullanıcılar için
     }
     
+    /**
+     * Eklentiyi çalıştır
+     */
     public function run() {
         $this->loader->run();
     }
     
+    /**
+     * Eklenti ismini döndür
+     *
+     * @return string Eklenti ismi
+     */
     public function get_plugin_name() {
         return $this->plugin_name;
     }
     
+    /**
+     * Loader nesnesini döndür
+     *
+     * @return Matas_Loader Loader nesnesi
+     */
+    public function get_loader() {
+        return $this->loader;
+    }
+    
+    /**
+     * Eklenti versiyonunu döndür
+     *
+     * @return string Eklenti versiyonu
+     */
     public function get_version() {
         return $this->version;
     }
