@@ -530,7 +530,7 @@ class Matas_Calculator {
         return ($taban_ayligi + $ek_gosterge_tutari) * $egitim_tazminat_orani;
     }
 
-   /**
+    /**
  * Geliştirme ödeneği hesaplar
  *
  * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
@@ -543,7 +543,7 @@ private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi
     // Örnek oran - gerçek projede bir tabloda saklanabilir
     $gelistirme_orani = 0.10;
     return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
-} // Kapanış parantezi eklendi
+} // Missing closing brace added here
 
     /**
      * Makam tazminatı hesaplar
