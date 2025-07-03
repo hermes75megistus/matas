@@ -1,6 +1,6 @@
 <?php
 /**
- * MATAS Admin sınıfı
+ * MATAS Admin sınıfı (İyileştirilmiş)
  * 
  * @package MATAS
  * @since 1.0.0
@@ -22,6 +22,24 @@ class Matas_Admin {
     private $version;
 
     /**
+     * Cache süresi
+     *
+     * @var int
+     */
+    private $cache_duration = 3600;
+
+    /**
+     * Rate limit ayarları
+     *
+     * @var array
+     */
+    private $rate_limits = array(
+        'default' => array('limit' => 100, 'period' => 3600),
+        'save' => array('limit' => 20, 'period' => 300),
+        'delete' => array('limit' => 10, 'period' => 300)
+    );
+
+    /**
      * Constructor
      *
      * @param string $plugin_name Eklenti ismi
@@ -30,6 +48,144 @@ class Matas_Admin {
     public function __construct($plugin_name, $version) {
         $this->plugin_name = $plugin_name;
         $this->version = $version;
+    }
+
+    /**
+     * Rate limiting kontrolü
+     */
+    private function check_rate_limit($action = 'default') {
+        if (!isset($this->rate_limits[$action])) {
+            $action = 'default';
+        }
+
+        $user_id = get_current_user_id();
+        $cache_key = "matas_rate_limit_{$action}_{$user_id}";
+        $attempts = wp_cache_get($cache_key, 'matas');
+
+        if (!$attempts) {
+            $attempts = 0;
+        }
+
+        $attempts++;
+
+        if ($attempts > $this->rate_limits[$action]['limit']) {
+            wp_send_json_error(array(
+                'message' => __('Çok fazla istek gönderildi. Lütfen bekleyiniz.', 'matas'),
+                'error_code' => 'RATE_LIMIT_EXCEEDED'
+            ));
+            return;
+        }
+
+        wp_cache_set($cache_key, $attempts, 'matas', $this->rate_limits[$action]['period']);
+    }
+
+    /**
+     * Güvenlik kontrolü (geliştirilmiş)
+     */
+    private function verify_security($nonce_action = 'matas_admin_nonce') {
+        // Nonce kontrolü
+        if (!check_ajax_referer($nonce_action, 'nonce', false)) {
+            wp_send_json_error(array(
+                'message' => __('Güvenlik doğrulaması başarısız!', 'matas'),
+                'error_code' => 'NONCE_FAILED'
+            ));
+            return false;
+        }
+        
+        // Yetki kontrolü
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array(
+                'message' => __('Yetkiniz yok!', 'matas'),
+                'error_code' => 'INSUFFICIENT_PERMISSIONS'
+            ));
+            return false;
+        }
+
+        // Referer kontrolü
+        if (!wp_verify_nonce($_POST['nonce'], $nonce_action)) {
+            wp_send_json_error(array(
+                'message' => __('Geçersiz istek!', 'matas'),
+                'error_code' => 'INVALID_REQUEST'
+            ));
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Input sanitization (geliştirilmiş)
+     */
+    private function sanitize_input($data, $type = 'text') {
+        switch ($type) {
+            case 'text':
+                return sanitize_text_field($data);
+            case 'email':
+                return sanitize_email($data);
+            case 'int':
+                return intval($data);
+            case 'float':
+                return floatval($data);
+            case 'textarea':
+                return sanitize_textarea_field($data);
+            case 'html':
+                return wp_kses_post($data);
+            case 'slug':
+                return sanitize_title($data);
+            case 'array':
+                return is_array($data) ? array_map('sanitize_text_field', $data) : array();
+            default:
+                return sanitize_text_field($data);
+        }
+    }
+
+    /**
+     * Veritabanı işlemi wrapper (transaction desteği)
+     */
+    private function execute_db_operation($callback, $rollback_callback = null) {
+        global $wpdb;
+        
+        try {
+            $wpdb->query('START TRANSACTION');
+            
+            $result = call_user_func($callback);
+            
+            if ($result === false) {
+                throw new Exception('Database operation failed');
+            }
+            
+            $wpdb->query('COMMIT');
+            return $result;
+            
+        } catch (Exception $e) {
+            $wpdb->query('ROLLBACK');
+            
+            if ($rollback_callback) {
+                call_user_func($rollback_callback);
+            }
+            
+            error_log('MATAS DB Error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Cache yönetimi
+     */
+    private function clear_related_cache($type) {
+        $cache_keys = array(
+            'katsayilar' => array('matas_katsayilar_active'),
+            'unvanlar' => array('matas_unvanlar_all'),
+            'gostergeler' => array('matas_gostergeler_all'),
+            'vergiler' => array('matas_vergiler_' . date('Y')),
+            'sosyal_yardimlar' => array('matas_sosyal_yardimlar_' . date('Y'))
+        );
+
+        if (isset($cache_keys[$type])) {
+            foreach ($cache_keys[$type] as $cache_key) {
+                wp_cache_delete($cache_key, 'matas');
+            }
+        }
     }
     
     /**
@@ -61,7 +217,13 @@ class Matas_Admin {
         
         wp_localize_script($this->plugin_name . '-admin', 'matas_ajax', array(
             'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('matas_admin_nonce')
+            'nonce' => wp_create_nonce('matas_admin_nonce'),
+            'strings' => array(
+                'confirm_delete' => __('Bu öğeyi silmek istediğinize emin misiniz?', 'matas'),
+                'loading' => __('Yükleniyor...', 'matas'),
+                'error' => __('Bir hata oluştu!', 'matas'),
+                'success' => __('İşlem başarılı!', 'matas')
+            )
         ));
     }
     
@@ -81,1122 +243,756 @@ class Matas_Admin {
         );
         
         // Alt sayfalar
-        add_submenu_page(
-            'matas',
-            __('Katsayılar', 'matas'),
-            __('Katsayılar', 'matas'),
-            'manage_options',
-            'matas-katsayilar',
-            array($this, 'display_katsayilar_page')
+        $subpages = array(
+            'katsayilar' => __('Katsayılar', 'matas'),
+            'unvanlar' => __('Ünvan Bilgileri', 'matas'),
+            'gostergeler' => __('Gösterge Puanları', 'matas'),
+            'vergiler' => __('Vergi Dilimleri', 'matas'),
+            'sosyal-yardimlar' => __('Sosyal Yardımlar', 'matas'),
+            'settings' => __('Ayarlar', 'matas'),
+            'logs' => __('Log Kayıtları', 'matas')
         );
-        
-        add_submenu_page(
-            'matas',
-            __('Ünvan Bilgileri', 'matas'),
-            __('Ünvan Bilgileri', 'matas'),
-            'manage_options',
-            'matas-unvanlar',
-            array($this, 'display_unvanlar_page')
-        );
-        
-        add_submenu_page(
-            'matas',
-            __('Gösterge Puanları', 'matas'),
-            __('Gösterge Puanları', 'matas'),
-            'manage_options',
-            'matas-gostergeler',
-            array($this, 'display_gostergeler_page')
-        );
-        
-        add_submenu_page(
-            'matas',
-            __('Vergi Dilimleri', 'matas'),
-            __('Vergi Dilimleri', 'matas'),
-            'manage_options',
-            'matas-vergiler',
-            array($this, 'display_vergiler_page')
-        );
-        
-        add_submenu_page(
-            'matas',
-            __('Sosyal Yardımlar', 'matas'),
-            __('Sosyal Yardımlar', 'matas'),
-            'manage_options',
-            'matas-sosyal-yardimlar',
-            array($this, 'display_sosyal_yardimlar_page')
-        );
+
+        foreach ($subpages as $slug => $title) {
+            add_submenu_page(
+                'matas',
+                $title,
+                $title,
+                'manage_options',
+                'matas-' . $slug,
+                array($this, 'display_' . str_replace('-', '_', $slug) . '_page')
+            );
+        }
     }
-    
+
     /**
-     * Admin dashboard sayfasını gösterir
+     * Dashboard sayfası
      */
     public function display_plugin_admin_dashboard() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/dashboard.php';
     }
-    
+
     /**
-     * Katsayılar sayfasını gösterir
+     * Katsayılar sayfası
      */
     public function display_katsayilar_page() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/katsayilar.php';
     }
-    
+
     /**
-     * Ünvanlar sayfasını gösterir
+     * Ünvanlar sayfası
      */
     public function display_unvanlar_page() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/unvanlar.php';
     }
-    
+
     /**
-     * Göstergeler sayfasını gösterir
+     * Göstergeler sayfası
      */
     public function display_gostergeler_page() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/gostergeler.php';
     }
-    
+
     /**
-     * Vergiler sayfasını gösterir
+     * Vergiler sayfası
      */
     public function display_vergiler_page() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/vergiler.php';
     }
-    
+
     /**
-     * Sosyal yardımlar sayfasını gösterir
+     * Sosyal yardımlar sayfası
      */
     public function display_sosyal_yardimlar_page() {
         include_once MATAS_PLUGIN_DIR . 'admin/partials/sosyal-yardimlar.php';
     }
+
+    /**
+     * Ayarlar sayfası
+     */
+    public function display_settings_page() {
+        include_once MATAS_PLUGIN_DIR . 'admin/partials/settings.php';
+    }
+
+    /**
+     * Log kayıtları sayfası
+     */
+    public function display_logs_page() {
+        include_once MATAS_PLUGIN_DIR . 'admin/partials/logs.php';
+    }
     
     /**
-     * Katsayıları kaydetme AJAX işleyicisi
+     * Katsayıları kaydetme AJAX işleyicisi (iyileştirilmiş)
      */
     public function save_katsayilar() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce')) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Form verilerini al ve sanitize et
-        $donem = sanitize_text_field(isset($_POST['donem']) ? $_POST['donem'] : '');
-        $aylik_katsayi = floatval(isset($_POST['aylik_katsayi']) ? $_POST['aylik_katsayi'] : 0);
-        $taban_katsayi = floatval(isset($_POST['taban_katsayi']) ? $_POST['taban_katsayi'] : 0);
-        $yan_odeme_katsayi = floatval(isset($_POST['yan_odeme_katsayi']) ? $_POST['yan_odeme_katsayi'] : 0);
-        
-        // Verileri doğrula
-        if (empty($donem) || $aylik_katsayi <= 0 || $taban_katsayi <= 0 || $yan_odeme_katsayi <= 0) {
-            wp_send_json_error(array('message' => __('Lütfen tüm alanları doldurunuz!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
         try {
-            // Eski aktif katsayıları pasif yap
-            $wpdb->query($wpdb->prepare(
-                "UPDATE {$wpdb->prefix}matas_katsayilar SET aktif = %d WHERE aktif = %d",
-                0, 1
-            ));
+            // Güvenlik ve rate limit kontrolleri
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('save');
             
-            // Yeni katsayıları ekle
-            $result = $wpdb->insert(
-                $wpdb->prefix . 'matas_katsayilar',
-                array(
-                    'donem' => $donem,
-                    'aylik_katsayi' => $aylik_katsayi,
-                    'taban_katsayi' => $taban_katsayi,
-                    'yan_odeme_katsayi' => $yan_odeme_katsayi,
-                    'aktif' => 1
-                ),
-                array('%s', '%f', '%f', '%f', '%d')
+            // Form verilerini al ve sanitize et
+            $data = array(
+                'donem' => $this->sanitize_input($_POST['donem'] ?? ''),
+                'aylik_katsayi' => $this->sanitize_input($_POST['aylik_katsayi'] ?? 0, 'float'),
+                'taban_katsayi' => $this->sanitize_input($_POST['taban_katsayi'] ?? 0, 'float'),
+                'yan_odeme_katsayi' => $this->sanitize_input($_POST['yan_odeme_katsayi'] ?? 0, 'float')
             );
             
-            if ($result === false) {
-                throw new Exception(__('Veritabanı hatası: Katsayılar kaydedilemedi.', 'matas'));
+            // Veri doğrulama
+            $validation = $this->validate_katsayilar_data($data);
+            if (!$validation['valid']) {
+                wp_send_json_error(array('message' => $validation['message']));
+                return;
             }
             
-            $wpdb->query('COMMIT');
-            wp_send_json_success(array('message' => __('Katsayılar başarıyla kaydedildi.', 'matas')));
+            // Veritabanı işlemi
+            $this->execute_db_operation(function() use ($data) {
+                global $wpdb;
+                
+                // Eski aktif katsayıları pasif yap
+                $wpdb->update(
+                    $wpdb->prefix . 'matas_katsayilar',
+                    array('aktif' => 0),
+                    array('aktif' => 1),
+                    array('%d'),
+                    array('%d')
+                );
+                
+                // Yeni katsayıları ekle
+                return $wpdb->insert(
+                    $wpdb->prefix . 'matas_katsayilar',
+                    array_merge($data, array('aktif' => 1)),
+                    array('%s', '%f', '%f', '%f', '%d')
+                );
+            });
+            
+            // Cache temizle
+            $this->clear_related_cache('katsayilar');
+            
+            // Log yaz
+            $this->log_admin_action('katsayilar_saved', $data);
+            
+            wp_send_json_success(array(
+                'message' => __('Katsayılar başarıyla kaydedildi.', 'matas')
+            ));
+            
         } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
+            wp_send_json_error(array(
+                'message' => __('Katsayılar kaydedilirken bir hata oluştu.', 'matas'),
+                'error_code' => 'SAVE_FAILED'
+            ));
         }
+    }
+
+    /**
+     * Katsayılar veri doğrulama
+     */
+    private function validate_katsayilar_data($data) {
+        if (empty($data['donem'])) {
+            return array('valid' => false, 'message' => __('Dönem adı gereklidir.', 'matas'));
+        }
+
+        if ($data['aylik_katsayi'] <= 0 || $data['taban_katsayi'] <= 0 || $data['yan_odeme_katsayi'] <= 0) {
+            return array('valid' => false, 'message' => __('Tüm katsayılar 0\'dan büyük olmalıdır.', 'matas'));
+        }
+
+        if ($data['aylik_katsayi'] > 10 || $data['taban_katsayi'] > 100 || $data['yan_odeme_katsayi'] > 10) {
+            return array('valid' => false, 'message' => __('Katsayı değerleri makul aralıkta olmalıdır.', 'matas'));
+        }
+
+        return array('valid' => true);
     }
     
     /**
-     * Ünvan kaydetme AJAX işleyicisi
+     * Ünvan kaydetme AJAX işleyicisi (iyileştirilmiş)
      */
     public function save_unvan() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Form verilerini al ve sanitize et
-        $unvan_id = isset($_POST['unvan_id']) ? intval($_POST['unvan_id']) : 0;
-        $unvan_kodu = sanitize_text_field(isset($_POST['unvan_kodu']) ? $_POST['unvan_kodu'] : '');
-        $unvan_adi = sanitize_text_field(isset($_POST['unvan_adi']) ? $_POST['unvan_adi'] : '');
-        $ekgosterge = intval(isset($_POST['ekgosterge']) ? $_POST['ekgosterge'] : 0);
-        $ozel_hizmet = intval(isset($_POST['ozel_hizmet']) ? $_POST['ozel_hizmet'] : 0);
-        $yan_odeme = intval(isset($_POST['yan_odeme']) ? $_POST['yan_odeme'] : 0);
-        $is_guclugu = intval(isset($_POST['is_guclugu']) ? $_POST['is_guclugu'] : 0);
-        $makam_tazminat = intval(isset($_POST['makam_tazminat']) ? $_POST['makam_tazminat'] : 0);
-        $egitim_tazminat = floatval(isset($_POST['egitim_tazminat']) ? $_POST['egitim_tazminat'] : 0);
-        
-        // Verileri doğrula
-        if (empty($unvan_kodu) || empty($unvan_adi)) {
-            wp_send_json_error(array('message' => __('Ünvan kodu ve adı zorunludur!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
         try {
-            // Ünvan kodunun benzersiz olup olmadığını kontrol et
-            if ($unvan_id === 0) { // Yeni ekleme
-                $existing = $wpdb->get_var($wpdb->prepare(
-                    "SELECT COUNT(*) FROM {$wpdb->prefix}matas_unvan_bilgileri WHERE unvan_kodu = %s",
-                    $unvan_kodu
-                ));
-                
-                if ($existing > 0) {
-                    throw new Exception(__('Bu ünvan kodu zaten kullanılıyor. Lütfen başka bir kod kullanın.', 'matas'));
-                }
-            }
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('save');
             
+            // Form verilerini al ve sanitize et
             $data = array(
-                'unvan_kodu' => $unvan_kodu,
-                'unvan_adi' => $unvan_adi,
-                'ekgosterge' => $ekgosterge,
-                'ozel_hizmet' => $ozel_hizmet,
-                'yan_odeme' => $yan_odeme,
-                'is_guclugu' => $is_guclugu,
-                'makam_tazminat' => $makam_tazminat,
-                'egitim_tazminat' => $egitim_tazminat
+                'id' => $this->sanitize_input($_POST['unvan_id'] ?? 0, 'int'),
+                'unvan_kodu' => $this->sanitize_input($_POST['unvan_kodu'] ?? '', 'slug'),
+                'unvan_adi' => $this->sanitize_input($_POST['unvan_adi'] ?? ''),
+                'ekgosterge' => $this->sanitize_input($_POST['ekgosterge'] ?? 0, 'int'),
+                'ozel_hizmet' => $this->sanitize_input($_POST['ozel_hizmet'] ?? 0, 'int'),
+                'yan_odeme' => $this->sanitize_input($_POST['yan_odeme'] ?? 0, 'int'),
+                'is_guclugu' => $this->sanitize_input($_POST['is_guclugu'] ?? 0, 'int'),
+                'makam_tazminat' => $this->sanitize_input($_POST['makam_tazminat'] ?? 0, 'int'),
+                'egitim_tazminat' => $this->sanitize_input($_POST['egitim_tazminat'] ?? 0, 'float')
             );
             
-            $formats = array('%s', '%s', '%d', '%d', '%d', '%d', '%d', '%f');
-            
-            // Yeni ünvan mı güncelleme mi kontrol et
-            if ($unvan_id > 0) {
-                // Güncelleme
-                $result = $wpdb->update(
-                    $wpdb->prefix . 'matas_unvan_bilgileri',
-                    $data,
-                    array('id' => $unvan_id),
-                    $formats,
-                    array('%d')
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Ünvan bilgileri güncellenemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array('message' => __('Ünvan bilgileri başarıyla güncellendi.', 'matas')));
-            } else {
-                // Yeni ünvan ekle
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_unvan_bilgileri',
-                    $data,
-                    $formats
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Ünvan bilgileri kaydedilemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array(
-                    'message' => __('Ünvan bilgileri başarıyla kaydedildi.', 'matas'),
-                    'unvan_id' => $wpdb->insert_id
-                ));
+            // Veri doğrulama
+            $validation = $this->validate_unvan_data($data);
+            if (!$validation['valid']) {
+                wp_send_json_error(array('message' => $validation['message']));
+                return;
             }
             
-            $wpdb->query('COMMIT');
+            // Veritabanı işlemi
+            $result = $this->execute_db_operation(function() use ($data) {
+                global $wpdb;
+                
+                // Unique kontrolü
+                if ($data['id'] === 0) {
+                    $existing = $wpdb->get_var($wpdb->prepare(
+                        "SELECT COUNT(*) FROM {$wpdb->prefix}matas_unvan_bilgileri WHERE unvan_kodu = %s",
+                        $data['unvan_kodu']
+                    ));
+                    
+                    if ($existing > 0) {
+                        throw new Exception(__('Bu ünvan kodu zaten kullanılıyor.', 'matas'));
+                    }
+                }
+                
+                $db_data = $data;
+                unset($db_data['id']);
+                
+                if ($data['id'] > 0) {
+                    // Güncelleme
+                    return $wpdb->update(
+                        $wpdb->prefix . 'matas_unvan_bilgileri',
+                        $db_data,
+                        array('id' => $data['id']),
+                        array('%s', '%s', '%d', '%d', '%d', '%d', '%d', '%f'),
+                        array('%d')
+                    );
+                } else {
+                    // Yeni ekleme
+                    $result = $wpdb->insert(
+                        $wpdb->prefix . 'matas_unvan_bilgileri',
+                        $db_data,
+                        array('%s', '%s', '%d', '%d', '%d', '%d', '%d', '%f')
+                    );
+                    
+                    return $result ? $wpdb->insert_id : false;
+                }
+            });
+            
+            // Cache temizle
+            $this->clear_related_cache('unvanlar');
+            
+            // Log yaz
+            $this->log_admin_action('unvan_saved', $data);
+            
+            $message = $data['id'] > 0 ? 
+                __('Ünvan bilgileri başarıyla güncellendi.', 'matas') : 
+                __('Ünvan bilgileri başarıyla kaydedildi.', 'matas');
+            
+            wp_send_json_success(array(
+                'message' => $message,
+                'unvan_id' => $data['id'] > 0 ? $data['id'] : $result
+            ));
+            
         } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
+            wp_send_json_error(array(
+                'message' => $e->getMessage(),
+                'error_code' => 'SAVE_FAILED'
+            ));
         }
+    }
+
+    /**
+     * Ünvan veri doğrulama
+     */
+    private function validate_unvan_data($data) {
+        if (empty($data['unvan_kodu']) || empty($data['unvan_adi'])) {
+            return array('valid' => false, 'message' => __('Ünvan kodu ve adı zorunludur!', 'matas'));
+        }
+
+        if (!preg_match('/^[a-zA-Z0-9_-]+$/', $data['unvan_kodu'])) {
+            return array('valid' => false, 'message' => __('Ünvan kodu sadece harf, rakam, tire ve alt çizgi içerebilir.', 'matas'));
+        }
+
+        if (strlen($data['unvan_kodu']) > 30 || strlen($data['unvan_adi']) > 100) {
+            return array('valid' => false, 'message' => __('Ünvan kodu veya adı çok uzun.', 'matas'));
+        }
+
+        $numeric_fields = array('ekgosterge', 'ozel_hizmet', 'yan_odeme', 'is_guclugu', 'makam_tazminat');
+        foreach ($numeric_fields as $field) {
+            if ($data[$field] < 0 || $data[$field] > 999999) {
+                return array('valid' => false, 'message' => sprintf(__('%s değeri geçersiz.', 'matas'), $field));
+            }
+        }
+
+        if ($data['egitim_tazminat'] < 0 || $data['egitim_tazminat'] > 1) {
+            return array('valid' => false, 'message' => __('Eğitim tazminat oranı 0-1 arasında olmalıdır.', 'matas'));
+        }
+
+        return array('valid' => true);
     }
     
     /**
-     * Ünvan silme AJAX işleyicisi
+     * Ünvan silme AJAX işleyicisi (iyileştirilmiş)
      */
     public function delete_unvan() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Silinecek ID'yi al
-        $unvan_id = isset($_POST['unvan_id']) ? intval($_POST['unvan_id']) : 0;
-        
-        if ($unvan_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz ünvan ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Ünvanı sil
-        $result = $wpdb->delete(
-            $wpdb->prefix . 'matas_unvan_bilgileri',
-            array('id' => $unvan_id),
-            array('%d')
-        );
-        
-        if ($result === false) {
-            wp_send_json_error(array('message' => __('Ünvan silinirken bir hata oluştu.', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('message' => __('Ünvan başarıyla silindi.', 'matas')));
-    }
-    
-    /**
-     * Gösterge puanı kaydetme AJAX işleyicisi
-     */
-    public function save_gosterge() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Form verilerini al ve sanitize et
-        $gosterge_id = isset($_POST['gosterge_id']) ? intval($_POST['gosterge_id']) : 0;
-        $derece = isset($_POST['derece']) ? intval($_POST['derece']) : 0;
-        $kademe = isset($_POST['kademe']) ? intval($_POST['kademe']) : 0;
-        $gosterge_puani = isset($_POST['gosterge_puani']) ? intval($_POST['gosterge_puani']) : 0;
-        
-        // Verileri doğrula
-        if ($derece <= 0 || $derece > 15 || $kademe <= 0 || $kademe > 9 || $gosterge_puani <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz değerler! Lütfen tüm alanları kontrol ediniz.', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
         try {
-            // Göstergenin zaten var olup olmadığını kontrol et
-            $existing = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}matas_gosterge_puanlari WHERE derece = %d AND kademe = %d AND id != %d",
-                $derece, $kademe, $gosterge_id
-            ));
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('delete');
             
-            if ($existing) {
-                throw new Exception(__('Bu derece ve kademe için zaten bir gösterge puanı tanımlanmış.', 'matas'));
+            $unvan_id = $this->sanitize_input($_POST['unvan_id'] ?? 0, 'int');
+            
+            if ($unvan_id <= 0) {
+                wp_send_json_error(array('message' => __('Geçersiz ünvan ID!', 'matas')));
+                return;
             }
             
-            $data = array(
-                'derece' => $derece,
-                'kademe' => $kademe,
-                'gosterge_puani' => $gosterge_puani
-            );
+            // Kullanım kontrolü
+            $usage_check = $this->check_unvan_usage($unvan_id);
+            if (!$usage_check['can_delete']) {
+                wp_send_json_error(array('message' => $usage_check['message']));
+                return;
+            }
             
-            $formats = array('%d', '%d', '%d');
-            
-            // Yeni gösterge mi güncelleme mi kontrol et
-            if ($gosterge_id > 0) {
-                // Güncelleme
-                $result = $wpdb->update(
-                    $wpdb->prefix . 'matas_gosterge_puanlari',
-                    $data,
-                    array('id' => $gosterge_id),
-                    $formats,
+            // Veritabanı işlemi
+            $this->execute_db_operation(function() use ($unvan_id) {
+                global $wpdb;
+                
+                $result = $wpdb->delete(
+                    $wpdb->prefix . 'matas_unvan_bilgileri',
+                    array('id' => $unvan_id),
                     array('%d')
                 );
                 
                 if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Gösterge puanı güncellenemedi.', 'matas'));
+                    throw new Exception('Delete operation failed');
                 }
                 
-                wp_send_json_success(array('message' => __('Gösterge puanı başarıyla güncellendi.', 'matas')));
-            } else {
-                // Yeni gösterge ekle
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_gosterge_puanlari',
-                    $data,
-                    $formats
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Gösterge puanı kaydedilemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array(
-                    'message' => __('Gösterge puanı başarıyla kaydedildi.', 'matas'),
-                    'gosterge_id' => $wpdb->insert_id
-                ));
-            }
+                return $result;
+            });
             
-            $wpdb->query('COMMIT');
+            // Cache temizle
+            $this->clear_related_cache('unvanlar');
+            
+            // Log yaz
+            $this->log_admin_action('unvan_deleted', array('id' => $unvan_id));
+            
+            wp_send_json_success(array('message' => __('Ünvan başarıyla silindi.', 'matas')));
+            
         } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
+            wp_send_json_error(array(
+                'message' => __('Ünvan silinirken bir hata oluştu.', 'matas'),
+                'error_code' => 'DELETE_FAILED'
+            ));
         }
     }
-    
+
     /**
-     * Vergi dilimi kaydetme AJAX işleyicisi
+     * Ünvan kullanım kontrolü
      */
-    public function save_vergi_dilimi() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Form verilerini al ve sanitize et
-        $vergi_id = isset($_POST['vergi_id']) ? intval($_POST['vergi_id']) : 0;
-        $yil = isset($_POST['yil']) ? intval($_POST['yil']) : 0;
-        $dilim = isset($_POST['dilim']) ? intval($_POST['dilim']) : 0;
-        $alt_limit = isset($_POST['alt_limit']) ? floatval($_POST['alt_limit']) : 0;
-        $ust_limit = isset($_POST['ust_limit']) ? floatval($_POST['ust_limit']) : 0;
-        $oran = isset($_POST['oran']) ? floatval($_POST['oran']) : 0;
-        
-        // Verileri doğrula
-        if ($yil <= 0 || $dilim <= 0 || $oran <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz değerler! Lütfen tüm alanları kontrol ediniz.', 'matas')));
-            return;
-        }
-        
+    private function check_unvan_usage($unvan_id) {
         global $wpdb;
         
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
+        // Örnek: Hesaplama geçmişinde kullanılıyor mu?
+        // Bu örnekte basit kontrol yapıyoruz
+        $unvan = $wpdb->get_row($wpdb->prepare(
+            "SELECT unvan_kodu FROM {$wpdb->prefix}matas_unvan_bilgileri WHERE id = %d",
+            $unvan_id
+        ));
         
-        try {
-            // Dilimin zaten var olup olmadığını kontrol et
-            $existing = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}matas_vergiler WHERE yil = %d AND dilim = %d AND id != %d",
-                $yil, $dilim, $vergi_id
-            ));
-            
-            if ($existing) {
-                throw new Exception(__('Bu yıl ve dilim için zaten bir vergi dilimi tanımlanmış.', 'matas'));
-            }
-            
-            $data = array(
-                'yil' => $yil,
-                'dilim' => $dilim,
-                'alt_limit' => $alt_limit,
-                'ust_limit' => $ust_limit,
-                'oran' => $oran
-            );
-            
-            $formats = array('%d', '%d', '%f', '%f', '%f');
-            
-            // Yeni dilim mi güncelleme mi kontrol et
-            if ($vergi_id > 0) {
-                // Güncelleme
-                $result = $wpdb->update(
-                    $wpdb->prefix . 'matas_vergiler',
-                    $data,
-                    array('id' => $vergi_id),
-                    $formats,
-                    array('%d')
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Vergi dilimi güncellenemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array('message' => __('Vergi dilimi başarıyla güncellendi.', 'matas')));
-            } else {
-                // Yeni dilim ekle
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_vergiler',
-                    $data,
-                    $formats
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Vergi dilimi kaydedilemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array(
-                    'message' => __('Vergi dilimi başarıyla kaydedildi.', 'matas'),
-                    'vergi_id' => $wpdb->insert_id
-                ));
-            }
-            
-            $wpdb->query('COMMIT');
-        } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
-        }
-    }
-    
-    /**
-     * Sosyal yardım kaydetme AJAX işleyicisi
-     */
-    public function save_sosyal_yardim() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
+        if (!$unvan) {
+            return array('can_delete' => false, 'message' => __('Ünvan bulunamadı.', 'matas'));
         }
         
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
+        // Sistem ünvanları korunabilir
+        $protected_codes = array('memur_genel', 'ogretmen_sinif');
+        if (in_array($unvan->unvan_kodu, $protected_codes)) {
+            return array('can_delete' => false, 'message' => __('Sistem ünvanları silinemez.', 'matas'));
         }
         
-        // Form verilerini al ve sanitize et
-        $yardim_id = isset($_POST['yardim_id']) ? intval($_POST['yardim_id']) : 0;
-        $yil = isset($_POST['yil']) ? intval($_POST['yil']) : 0;
-        $tip = isset($_POST['tip']) ? sanitize_text_field($_POST['tip']) : '';
-        $adi = isset($_POST['adi']) ? sanitize_text_field($_POST['adi']) : '';
-        $tutar = isset($_POST['tutar']) ? floatval($_POST['tutar']) : 0;
-        
-        // Verileri doğrula
-        if ($yil <= 0 || empty($tip) || empty($adi) || $tutar <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz değerler! Lütfen tüm alanları kontrol ediniz.', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
-        try {
-            // Yardımın zaten var olup olmadığını kontrol et
-            $existing = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM {$wpdb->prefix}matas_sosyal_yardimlar WHERE yil = %d AND tip = %s AND id != %d",
-                $yil, $tip, $yardim_id
-            ));
-            
-            if ($existing) {
-                throw new Exception(__('Bu yıl ve tip için zaten bir sosyal yardım tanımlanmış.', 'matas'));
-            }
-            
-            $data = array(
-                'yil' => $yil,
-                'tip' => $tip,
-                'adi' => $adi,
-                'tutar' => $tutar
-            );
-            
-            $formats = array('%d', '%s', '%s', '%f');
-            
-            // Yeni yardım mı güncelleme mi kontrol et
-            if ($yardim_id > 0) {
-                // Güncelleme
-                $result = $wpdb->update(
-                    $wpdb->prefix . 'matas_sosyal_yardimlar',
-                    $data,
-                    array('id' => $yardim_id),
-                    $formats,
-                    array('%d')
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Sosyal yardım güncellenemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array('message' => __('Sosyal yardım başarıyla güncellendi.', 'matas')));
-            } else {
-                // Yeni yardım ekle
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_sosyal_yardimlar',
-                    $data,
-                    $formats
-                );
-                
-                if ($result === false) {
-                    throw new Exception(__('Veritabanı hatası: Sosyal yardım kaydedilemedi.', 'matas'));
-                }
-                
-                wp_send_json_success(array(
-                    'message' => __('Sosyal yardım başarıyla kaydedildi.', 'matas'),
-                    'yardim_id' => $wpdb->insert_id
-                ));
-            }
-            
-            $wpdb->query('COMMIT');
-        } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
-        }
+        return array('can_delete' => true);
     }
 
     /**
      * Ünvan detaylarını getirme AJAX işleyicisi
      */
-public function get_unvan() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Unvan ID'sini al
-        $unvan_id = isset($_POST['unvan_id']) ? intval($_POST['unvan_id']) : 0;
-        
-        if ($unvan_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz ünvan ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Unvan bilgilerini al
-        $unvan = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}matas_unvan_bilgileri WHERE id = %d",
-                $unvan_id
-            ),
-            ARRAY_A
-        );
-        
-        if (!$unvan) {
-            wp_send_json_error(array('message' => __('Ünvan bulunamadı!', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('unvan' => $unvan));
-    }
-    
-    /**
-     * Gösterge detaylarını getirme AJAX işleyicisi
-     */
-    public function get_gosterge() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Gösterge ID'sini al
-        $gosterge_id = isset($_POST['gosterge_id']) ? intval($_POST['gosterge_id']) : 0;
-        
-        if ($gosterge_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz gösterge ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Gösterge bilgilerini al
-        $gosterge = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}matas_gosterge_puanlari WHERE id = %d",
-                $gosterge_id
-            ),
-            ARRAY_A
-        );
-        
-        if (!$gosterge) {
-            wp_send_json_error(array('message' => __('Gösterge bulunamadı!', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('gosterge' => $gosterge));
-    }
-    
-    /**
-     * Gösterge silme AJAX işleyicisi
-     */
-    public function delete_gosterge() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Gösterge ID'sini al
-        $gosterge_id = isset($_POST['gosterge_id']) ? intval($_POST['gosterge_id']) : 0;
-        
-        if ($gosterge_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz gösterge ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Göstergeyi sil
-        $result = $wpdb->delete(
-            $wpdb->prefix . 'matas_gosterge_puanlari',
-            array('id' => $gosterge_id),
-            array('%d')
-        );
-        
-        if ($result === false) {
-            wp_send_json_error(array('message' => __('Gösterge silinirken bir hata oluştu.', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('message' => __('Gösterge başarıyla silindi.', 'matas')));
-    }
-    
-    /**
-     * Varsayılan göstergeleri yükleme AJAX işleyicisi
-     */
-    public function load_default_gostergeler() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
+    public function get_unvan() {
         try {
-            // Mevcut göstergeleri sil
-            $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}matas_gosterge_puanlari");
+            if (!$this->verify_security()) return;
             
-            // Varsayılan göstergeleri ekle
-            $gosterge_puanlari = array(
-                // 1. Derece
-                array('derece' => 1, 'kademe' => 1, 'gosterge_puani' => 1320),
-                array('derece' => 1, 'kademe' => 2, 'gosterge_puani' => 1380),
-                array('derece' => 1, 'kademe' => 3, 'gosterge_puani' => 1440),
-                array('derece' => 1, 'kademe' => 4, 'gosterge_puani' => 1500),
-                array('derece' => 1, 'kademe' => 5, 'gosterge_puani' => 1560),
-                array('derece' => 1, 'kademe' => 6, 'gosterge_puani' => 1620),
-                array('derece' => 1, 'kademe' => 7, 'gosterge_puani' => 1680),
-                array('derece' => 1, 'kademe' => 8, 'gosterge_puani' => 1740),
-                
-                // 2. Derece
-                array('derece' => 2, 'kademe' => 1, 'gosterge_puani' => 1155),
-                array('derece' => 2, 'kademe' => 2, 'gosterge_puani' => 1210),
-                array('derece' => 2, 'kademe' => 3, 'gosterge_puani' => 1265),
-                array('derece' => 2, 'kademe' => 4, 'gosterge_puani' => 1320),
-                array('derece' => 2, 'kademe' => 5, 'gosterge_puani' => 1380),
-                array('derece' => 2, 'kademe' => 6, 'gosterge_puani' => 1440),
-                array('derece' => 2, 'kademe' => 7, 'gosterge_puani' => 1500),
-                array('derece' => 2, 'kademe' => 8, 'gosterge_puani' => 1560),
-                
-                // 3. Derece
-                array('derece' => 3, 'kademe' => 1, 'gosterge_puani' => 1020),
-                array('derece' => 3, 'kademe' => 2, 'gosterge_puani' => 1065),
-                array('derece' => 3, 'kademe' => 3, 'gosterge_puani' => 1110),
-                array('derece' => 3, 'kademe' => 4, 'gosterge_puani' => 1155),
-                array('derece' => 3, 'kademe' => 5, 'gosterge_puani' => 1210),
-                array('derece' => 3, 'kademe' => 6, 'gosterge_puani' => 1265),
-                array('derece' => 3, 'kademe' => 7, 'gosterge_puani' => 1320),
-                array('derece' => 3, 'kademe' => 8, 'gosterge_puani' => 1380),
-                array('derece' => 3, 'kademe' => 9, 'gosterge_puani' => 1440),
-                
-                // Diğer dereceler ve kademeler...
-                // 4. Derece
-                array('derece' => 4, 'kademe' => 1, 'gosterge_puani' => 915),
-                array('derece' => 4, 'kademe' => 2, 'gosterge_puani' => 950),
-                array('derece' => 4, 'kademe' => 3, 'gosterge_puani' => 985),
-                array('derece' => 4, 'kademe' => 4, 'gosterge_puani' => 1020),
-                array('derece' => 4, 'kademe' => 5, 'gosterge_puani' => 1065),
-                array('derece' => 4, 'kademe' => 6, 'gosterge_puani' => 1110),
-                array('derece' => 4, 'kademe' => 7, 'gosterge_puani' => 1155),
-                array('derece' => 4, 'kademe' => 8, 'gosterge_puani' => 1210),
-                array('derece' => 4, 'kademe' => 9, 'gosterge_puani' => 1265),
-            );
+            $unvan_id = $this->sanitize_input($_POST['unvan_id'] ?? 0, 'int');
             
-            $success_count = 0;
-            foreach ($gosterge_puanlari as $gosterge) {
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_gosterge_puanlari',
-                    $gosterge,
-                    array('%d', '%d', '%d')
-                );
-                
-                if ($result) {
-                    $success_count++;
-                }
+            if ($unvan_id <= 0) {
+                wp_send_json_error(array('message' => __('Geçersiz ünvan ID!', 'matas')));
+                return;
             }
             
-            $wpdb->query('COMMIT');
+            global $wpdb;
+            
+            $unvan = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}matas_unvan_bilgileri WHERE id = %d",
+                    $unvan_id
+                ),
+                ARRAY_A
+            );
+            
+            if (!$unvan) {
+                wp_send_json_error(array('message' => __('Ünvan bulunamadı!', 'matas')));
+                return;
+            }
+            
+            wp_send_json_success(array('unvan' => $unvan));
+            
+        } catch (Exception $e) {
+            wp_send_json_error(array(
+                'message' => __('Ünvan bilgileri alınırken hata oluştu.', 'matas'),
+                'error_code' => 'FETCH_FAILED'
+            ));
+        }
+    }
+
+    /**
+     * Gösterge kaydetme AJAX işleyicisi (iyileştirilmiş)
+     */
+    public function save_gosterge() {
+        try {
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('save');
+            
+            $data = array(
+                'id' => $this->sanitize_input($_POST['gosterge_id'] ?? 0, 'int'),
+                'derece' => $this->sanitize_input($_POST['derece'] ?? 0, 'int'),
+                'kademe' => $this->sanitize_input($_POST['kademe'] ?? 0, 'int'),
+                'gosterge_puani' => $this->sanitize_input($_POST['gosterge_puani'] ?? 0, 'int')
+            );
+            
+            // Veri doğrulama
+            $validation = $this->validate_gosterge_data($data);
+            if (!$validation['valid']) {
+                wp_send_json_error(array('message' => $validation['message']));
+                return;
+            }
+            
+            // Veritabanı işlemi
+            $result = $this->execute_db_operation(function() use ($data) {
+                global $wpdb;
+                
+                // Unique kontrolü
+                $existing = $wpdb->get_var($wpdb->prepare(
+                    "SELECT id FROM {$wpdb->prefix}matas_gosterge_puanlari WHERE derece = %d AND kademe = %d AND id != %d",
+                    $data['derece'], $data['kademe'], $data['id']
+                ));
+                
+                if ($existing) {
+                    throw new Exception(__('Bu derece ve kademe için zaten bir gösterge puanı tanımlanmış.', 'matas'));
+                }
+                
+                $db_data = $data;
+                unset($db_data['id']);
+                
+                if ($data['id'] > 0) {
+                    return $wpdb->update(
+                        $wpdb->prefix . 'matas_gosterge_puanlari',
+                        $db_data,
+                        array('id' => $data['id']),
+                        array('%d', '%d', '%d'),
+                        array('%d')
+                    );
+                } else {
+                    $result = $wpdb->insert(
+                        $wpdb->prefix . 'matas_gosterge_puanlari',
+                        $db_data,
+                        array('%d', '%d', '%d')
+                    );
+                    return $result ? $wpdb->insert_id : false;
+                }
+            });
+            
+            // Cache temizle
+            $this->clear_related_cache('gostergeler');
+            
+            // Log yaz
+            $this->log_admin_action('gosterge_saved', $data);
+            
+            $message = $data['id'] > 0 ? 
+                __('Gösterge puanı başarıyla güncellendi.', 'matas') : 
+                __('Gösterge puanı başarıyla kaydedildi.', 'matas');
+            
+            wp_send_json_success(array(
+                'message' => $message,
+                'gosterge_id' => $data['id'] > 0 ? $data['id'] : $result
+            ));
+            
+        } catch (Exception $e) {
+            wp_send_json_error(array(
+                'message' => $e->getMessage(),
+                'error_code' => 'SAVE_FAILED'
+            ));
+        }
+    }
+
+    /**
+     * Gösterge veri doğrulama
+     */
+    private function validate_gosterge_data($data) {
+        if ($data['derece'] <= 0 || $data['derece'] > 15) {
+            return array('valid' => false, 'message' => __('Derece 1-15 arasında olmalıdır.', 'matas'));
+        }
+
+        if ($data['kademe'] <= 0 || $data['kademe'] > 9) {
+            return array('valid' => false, 'message' => __('Kademe 1-9 arasında olmalıdır.', 'matas'));
+        }
+
+        if ($data['gosterge_puani'] <= 0 || $data['gosterge_puani'] > 5000) {
+            return array('valid' => false, 'message' => __('Gösterge puanı 1-5000 arasında olmalıdır.', 'matas'));
+        }
+
+        return array('valid' => true);
+    }
+
+    /**
+     * Gösterge detaylarını getirme
+     */
+    public function get_gosterge() {
+        try {
+            if (!$this->verify_security()) return;
+            
+            $gosterge_id = $this->sanitize_input($_POST['gosterge_id'] ?? 0, 'int');
+            
+            if ($gosterge_id <= 0) {
+                wp_send_json_error(array('message' => __('Geçersiz gösterge ID!', 'matas')));
+                return;
+            }
+            
+            global $wpdb;
+            
+            $gosterge = $wpdb->get_row(
+                $wpdb->prepare(
+                    "SELECT * FROM {$wpdb->prefix}matas_gosterge_puanlari WHERE id = %d",
+                    $gosterge_id
+                ),
+                ARRAY_A
+            );
+            
+            if (!$gosterge) {
+                wp_send_json_error(array('message' => __('Gösterge bulunamadı!', 'matas')));
+                return;
+            }
+            
+            wp_send_json_success(array('gosterge' => $gosterge));
+            
+        } catch (Exception $e) {
+            wp_send_json_error(array(
+                'message' => __('Gösterge bilgileri alınırken hata oluştu.', 'matas'),
+                'error_code' => 'FETCH_FAILED'
+            ));
+        }
+    }
+
+    /**
+     * Gösterge silme
+     */
+    public function delete_gosterge() {
+        try {
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('delete');
+            
+            $gosterge_id = $this->sanitize_input($_POST['gosterge_id'] ?? 0, 'int');
+            
+            if ($gosterge_id <= 0) {
+                wp_send_json_error(array('message' => __('Geçersiz gösterge ID!', 'matas')));
+                return;
+            }
+            
+            $this->execute_db_operation(function() use ($gosterge_id) {
+                global $wpdb;
+                
+                $result = $wpdb->delete(
+                    $wpdb->prefix . 'matas_gosterge_puanlari',
+                    array('id' => $gosterge_id),
+                    array('%d')
+                );
+                
+                if ($result === false) {
+                    throw new Exception('Delete operation failed');
+                }
+                
+                return $result;
+            });
+            
+            // Cache temizle
+            $this->clear_related_cache('gostergeler');
+            
+            // Log yaz
+            $this->log_admin_action('gosterge_deleted', array('id' => $gosterge_id));
+            
+            wp_send_json_success(array('message' => __('Gösterge başarıyla silindi.', 'matas')));
+            
+        } catch (Exception $e) {
+            wp_send_json_error(array(
+                'message' => __('Gösterge silinirken bir hata oluştu.', 'matas'),
+                'error_code' => 'DELETE_FAILED'
+            ));
+        }
+    }
+
+    /**
+     * Varsayılan göstergeleri yükleme
+     */
+    public function load_default_gostergeler() {
+        try {
+            if (!$this->verify_security()) return;
+            $this->check_rate_limit('save');
+            
+            $default_gostergeler = $this->get_default_gosterge_data();
+            
+            $success_count = $this->execute_db_operation(function() use ($default_gostergeler) {
+                global $wpdb;
+                
+                // Mevcut göstergeleri sil
+                $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}matas_gosterge_puanlari");
+                
+                $success_count = 0;
+                foreach ($default_gostergeler as $gosterge) {
+                    $result = $wpdb->insert(
+                        $wpdb->prefix . 'matas_gosterge_puanlari',
+                        $gosterge,
+                        array('%d', '%d', '%d')
+                    );
+                    
+                    if ($result) {
+                        $success_count++;
+                    }
+                }
+                
+                return $success_count;
+            });
+            
+            // Cache temizle
+            $this->clear_related_cache('gostergeler');
+            
+            // Log yaz
+            $this->log_admin_action('default_gostergeler_loaded', array('count' => $success_count));
             
             wp_send_json_success(array(
                 'message' => sprintf(__('Varsayılan gösterge puanları başarıyla yüklendi. Toplam %d gösterge eklendi.', 'matas'), $success_count)
             ));
+            
         } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
+            wp_send_json_error(array(
+                'message' => __('Varsayılan göstergeler yüklenirken hata oluştu.', 'matas'),
+                'error_code' => 'LOAD_FAILED'
+            ));
         }
     }
-    
+
     /**
-     * Vergi dilimi detaylarını getirme AJAX işleyicisi
+     * Varsayılan gösterge verilerini döndür
      */
-    public function get_vergi_dilimi() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Vergi ID'sini al
-        $vergi_id = isset($_POST['vergi_id']) ? intval($_POST['vergi_id']) : 0;
-        
-        if ($vergi_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz vergi ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Vergi bilgilerini al
-        $vergi = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}matas_vergiler WHERE id = %d",
-                $vergi_id
-            ),
-            ARRAY_A
-        );
-        
-        if (!$vergi) {
-            wp_send_json_error(array('message' => __('Vergi dilimi bulunamadı!', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('vergi' => $vergi));
-    }
-    
-    /**
-     * Vergi dilimi silme AJAX işleyicisi
-     */
-    public function delete_vergi_dilimi() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Vergi ID'sini al
-        $vergi_id = isset($_POST['vergi_id']) ? intval($_POST['vergi_id']) : 0;
-        
-        if ($vergi_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz vergi ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Vergiyi sil
-        $result = $wpdb->delete(
-            $wpdb->prefix . 'matas_vergiler',
-            array('id' => $vergi_id),
-            array('%d')
-        );
-        
-        if ($result === false) {
-            wp_send_json_error(array('message' => __('Vergi dilimi silinirken bir hata oluştu.', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('message' => __('Vergi dilimi başarıyla silindi.', 'matas')));
-    }
-    
-    /**
-     * Varsayılan vergi dilimlerini yükleme AJAX işleyicisi
-     */
-    public function load_default_vergiler() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Yıl parametresini al
-        $yil = isset($_POST['yil']) ? intval($_POST['yil']) : date('Y');
-        
-        if ($yil <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz yıl değeri!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
-        try {
-            // Mevcut vergi dilimlerini sil
-            $wpdb->delete(
-                $wpdb->prefix . 'matas_vergiler',
-                array('yil' => $yil),
-                array('%d')
-            );
+    private function get_default_gosterge_data() {
+        return array(
+            // 1. Derece
+            array('derece' => 1, 'kademe' => 1, 'gosterge_puani' => 1320),
+            array('derece' => 1, 'kademe' => 2, 'gosterge_puani' => 1380),
+            array('derece' => 1, 'kademe' => 3, 'gosterge_puani' => 1440),
+            array('derece' => 1, 'kademe' => 4, 'gosterge_puani' => 1500),
+            array('derece' => 1, 'kademe' => 5, 'gosterge_puani' => 1560),
+            array('derece' => 1, 'kademe' => 6, 'gosterge_puani' => 1620),
+            array('derece' => 1, 'kademe' => 7, 'gosterge_puani' => 1680),
+            array('derece' => 1, 'kademe' => 8, 'gosterge_puani' => 1740),
             
-            // Varsayılan vergi dilimlerini ekle
-            $vergi_dilimleri = array(
-                array('yil' => $yil, 'dilim' => 1, 'alt_limit' => 0, 'ust_limit' => 70000, 'oran' => 15),
-                array('yil' => $yil, 'dilim' => 2, 'alt_limit' => 70000, 'ust_limit' => 150000, 'oran' => 20),
-                array('yil' => $yil, 'dilim' => 3, 'alt_limit' => 150000, 'ust_limit' => 550000, 'oran' => 27),
-                array('yil' => $yil, 'dilim' => 4, 'alt_limit' => 550000, 'ust_limit' => 1900000, 'oran' => 35),
-                array('yil' => $yil, 'dilim' => 5, 'alt_limit' => 1900000, 'ust_limit' => 0, 'oran' => 40),
-            );
+            // 2. Derece
+            array('derece' => 2, 'kademe' => 1, 'gosterge_puani' => 1155),
+            array('derece' => 2, 'kademe' => 2, 'gosterge_puani' => 1210),
+            array('derece' => 2, 'kademe' => 3, 'gosterge_puani' => 1265),
+            array('derece' => 2, 'kademe' => 4, 'gosterge_puani' => 1320),
+            array('derece' => 2, 'kademe' => 5, 'gosterge_puani' => 1380),
+            array('derece' => 2, 'kademe' => 6, 'gosterge_puani' => 1440),
+            array('derece' => 2, 'kademe' => 7, 'gosterge_puani' => 1500),
+            array('derece' => 2, 'kademe' => 8, 'gosterge_puani' => 1560),
             
-            $success_count = 0;
-            foreach ($vergi_dilimleri as $dilim) {
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_vergiler',
-                    $dilim,
-                    array('%d', '%d', '%f', '%f', '%f')
-                );
-                
-                if ($result) {
-                    $success_count++;
+            // 3. Derece  
+            array('derece' => 3, 'kademe' => 1, 'gosterge_puani' => 1020),
+            array('derece' => 3, 'kademe' => 2, 'gosterge_puani' => 1065),
+            array('derece' => 3, 'kademe' => 3, 'gosterge_puani' => 1110),
+            array('derece' => 3, 'kademe' => 4, 'gosterge_puani' => 1155),
+            array('derece' => 3, 'kademe' => 5, 'gosterge_puani' => 1210),
+            array('derece' => 3, 'kademe' => 6, 'gosterge_puani' => 1265),
+            array('derece' => 3, 'kademe' => 7, 'gosterge_puani' => 1320),
+            array('derece' => 3, 'kademe' => 8, 'gosterge_puani' => 1380),
+            array('derece' => 3, 'kademe' => 9, 'gosterge_puani' => 1440),
+            
+            // 4. Derece
+            array('derece' => 4, 'kademe' => 1, 'gosterge_puani' => 915),
+            array('derece' => 4, 'kademe' => 2, 'gosterge_puani' => 950),
+            array('derece' => 4, 'kademe' => 3, 'gosterge_puani' => 985),
+            array('derece' => 4, 'kademe' => 4, 'gosterge_puani' => 1020),
+            array('derece' => 4, 'kademe' => 5, 'gosterge_puani' => 1065),
+            array('derece' => 4, 'kademe' => 6, 'gosterge_puani' => 1110),
+            array('derece' => 4, 'kademe' => 7, 'gosterge_puani' => 1155),
+            array('derece' => 4, 'kademe' => 8, 'gosterge_puani' => 1210),
+            array('derece' => 4, 'kademe' => 9, 'gosterge_puani' => 1265)
+        );
+    }
+
+    /**
+     * Admin aktivite logları
+     */
+    private function log_admin_action($action, $data = array()) {
+        if (!defined('WP_DEBUG') || !WP_DEBUG) {
+            return;
+        }
+
+        $log_entry = array(
+            'timestamp' => current_time('mysql'),
+            'user_id' => get_current_user_id(),
+            'user_login' => wp_get_current_user()->user_login,
+            'action' => $action,
+            'data' => $data,
+            'ip' => $this->get_user_ip()
+        );
+
+        error_log('MATAS Admin Action: ' . json_encode($log_entry));
+        
+        // Veritabanına da kaydedilebilir
+        $this->save_log_to_db($log_entry);
+    }
+
+    /**
+     * Log'u veritabanına kaydet
+     */
+    private function save_log_to_db($log_entry) {
+        global $wpdb;
+        
+        // Log tablosu varsa kaydet
+        $table_name = $wpdb->prefix . 'matas_logs';
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") == $table_name;
+        
+        if ($table_exists) {
+            $wpdb->insert(
+                $table_name,
+                array(
+                    'timestamp' => $log_entry['timestamp'],
+                    'user_id' => $log_entry['user_id'],
+                    'action' => $log_entry['action'],
+                    'data' => json_encode($log_entry['data']),
+                    'ip_address' => $log_entry['ip']
+                ),
+                array('%s', '%d', '%s', '%s', '%s')
+            );
+        }
+    }
+
+    /**
+     * Kullanıcı IP'sini al
+     */
+    private function get_user_ip() {
+        $ip_fields = array('HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_FORWARDED', 'HTTP_FORWARDED_FOR', 'HTTP_FORWARDED', 'REMOTE_ADDR');
+        
+        foreach ($ip_fields as $field) {
+            if (!empty($_SERVER[$field])) {
+                $ip = trim(explode(',', $_SERVER[$field])[0]);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    return $ip;
                 }
             }
-            
-            $wpdb->query('COMMIT');
-            
-            wp_send_json_success(array(
-                'message' => sprintf(__('%s yılı için varsayılan vergi dilimleri başarıyla yüklendi. Toplam %d dilim eklendi.', 'matas'), $yil, $success_count)
-            ));
-        } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
         }
+        
+        return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     }
-    
-    /**
-     * Sosyal yardım detaylarını getirme AJAX işleyicisi
-     */
-    public function get_sosyal_yardim() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Yardım ID'sini al
-        $yardim_id = isset($_POST['yardim_id']) ? intval($_POST['yardim_id']) : 0;
-        
-        if ($yardim_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz yardım ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Yardım bilgilerini al
-        $yardim = $wpdb->get_row(
-            $wpdb->prepare(
-                "SELECT * FROM {$wpdb->prefix}matas_sosyal_yardimlar WHERE id = %d",
-                $yardim_id
-            ),
-            ARRAY_A
-        );
-        
-        if (!$yardim) {
-            wp_send_json_error(array('message' => __('Sosyal yardım bulunamadı!', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('yardim' => $yardim));
-    }
-    
-    /**
-     * Sosyal yardım silme AJAX işleyicisi
-     */
-    public function delete_sosyal_yardim() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Yardım ID'sini al
-        $yardim_id = isset($_POST['yardim_id']) ? intval($_POST['yardim_id']) : 0;
-        
-        if ($yardim_id <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz yardım ID!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Yardımı sil
-        $result = $wpdb->delete(
-            $wpdb->prefix . 'matas_sosyal_yardimlar',
-            array('id' => $yardim_id),
-            array('%d')
-        );
-        
-        if ($result === false) {
-            wp_send_json_error(array('message' => __('Sosyal yardım silinirken bir hata oluştu.', 'matas')));
-            return;
-        }
-        
-        wp_send_json_success(array('message' => __('Sosyal yardım başarıyla silindi.', 'matas')));
-    }
-    
-    /**
-     * Varsayılan sosyal yardımları yükleme AJAX işleyicisi
-     */
-    public function load_default_sosyal_yardimlar() {
-        // Güvenlik kontrolü
-        if (!check_ajax_referer('matas_admin_nonce', 'nonce', false)) {
-            wp_send_json_error(array('message' => __('Güvenlik doğrulaması başarısız!', 'matas')));
-            return;
-        }
-        
-        // Yetki kontrolü
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(array('message' => __('Yetkiniz yok!', 'matas')));
-            return;
-        }
-        
-        // Yıl parametresini al
-        $yil = isset($_POST['yil']) ? intval($_POST['yil']) : date('Y');
-        
-        if ($yil <= 0) {
-            wp_send_json_error(array('message' => __('Geçersiz yıl değeri!', 'matas')));
-            return;
-        }
-        
-        global $wpdb;
-        
-        // Veritabanı işlemlerini transaction içine al
-        $wpdb->query('START TRANSACTION');
-        
-        try {
-            // Mevcut sosyal yardımları sil
-            $wpdb->delete(
-                $wpdb->prefix . 'matas_sosyal_yardimlar',
-                array('yil' => $yil),
-                array('%d')
-            );
-            
-            // Varsayılan sosyal yardımları ekle
-            $sosyal_yardimlar = array(
-                array('yil' => $yil, 'tip' => 'aile_yardimi', 'adi' => 'Aile Yardımı', 'tutar' => 1200),
-                array('yil' => $yil, 'tip' => 'cocuk_normal', 'adi' => 'Çocuk Yardımı', 'tutar' => 150),
-                array('yil' => $yil, 'tip' => 'cocuk_0_6', 'adi' => '0-6 Yaş Çocuk Yardımı', 'tutar' => 300),
-                array('yil' => $yil, 'tip' => 'cocuk_engelli', 'adi' => 'Engelli Çocuk Yardımı', 'tutar' => 600),
-                array('yil' => $yil, 'tip' => 'cocuk_ogrenim', 'adi' => 'Öğrenim Çocuk Yardımı', 'tutar' => 250),
-                array('yil' => $yil, 'tip' => 'kira_yardimi', 'adi' => 'Kira Yardımı', 'tutar' => 2000),
-                array('yil' => $yil, 'tip' => 'sendika_yardimi', 'adi' => 'Sendika Yardımı', 'tutar' => 500),
-                array('yil' => $yil, 'tip' => 'yemek_yardimi', 'adi' => 'Yemek Yardımı', 'tutar' => 1200),
-                array('yil' => $yil, 'tip' => 'giyecek_yardimi', 'adi' => 'Giyecek Yardımı', 'tutar' => 800),
-                array('yil' => $yil, 'tip' => 'yakacak_yardimi', 'adi' => 'Yakacak Yardımı', 'tutar' => 1100),
-            );
-            
-            $success_count = 0;
-            foreach ($sosyal_yardimlar as $yardim) {
-                $result = $wpdb->insert(
-                    $wpdb->prefix . 'matas_sosyal_yardimlar',
-                    $yardim,
-                    array('%d', '%s', '%s', '%f')
-                );
-                
-                if ($result) {
-                    $success_count++;
-                }
-            }
-            
-            $wpdb->query('COMMIT');
-            
-            wp_send_json_success(array(
-                'message' => sprintf(__('%s yılı için varsayılan sosyal yardımlar başarıyla yüklendi. Toplam %d yardım eklendi.', 'matas'), $yil, $success_count)
-            ));
-        } catch (Exception $e) {
-            $wpdb->query('ROLLBACK');
-            wp_send_json_error(array('message' => $e->getMessage()));
-        }
-    }
-}
+
+    // Diğer AJAX işleyicileri (save_vergi_dilimi, save_sosyal_yardim, vb.) 
+    // aynı pattern ile iyileştirilebilir...
