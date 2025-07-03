@@ -22,46 +22,18 @@ class Matas_Calculator {
     private $version;
     
     /**
-     * Katsayılar
+     * Cache süresi (saniye)
      *
-     * @var array
+     * @var int
      */
-    private $katsayilar;
+    private $cache_duration = 3600; // 1 saat
     
     /**
-     * Unvanlar
+     * Hata logları
      *
      * @var array
      */
-    private $unvanlar;
-    
-    /**
-     * Göstergeler
-     *
-     * @var array
-     */
-    private $gostergeler;
-    
-    /**
-     * Dil göstergeleri
-     *
-     * @var array
-     */
-    private $dil_gostergeleri;
-    
-    /**
-     * Vergiler
-     *
-     * @var array
-     */
-    private $vergiler;
-    
-    /**
-     * Sosyal yardımlar
-     *
-     * @var array
-     */
-    private $sosyal_yardimlar;
+    private $errors = array();
 
     /**
      * Sınıfı başlat
@@ -72,52 +44,117 @@ class Matas_Calculator {
     public function __construct($plugin_name, $version) {
         $this->plugin_name = $plugin_name;
         $this->version = $version;
-        $this->load_data();
     }
 
     /**
-     * Veritabanından hesaplama için gerekli verileri yükler
+     * Veritabanından hesaplama için gerekli verileri yükler (cache'li)
      */
     private function load_data() {
-        global $wpdb;
+        try {
+            // Cache anahtarları
+            $cache_keys = array(
+                'katsayilar' => 'matas_katsayilar_active',
+                'unvanlar' => 'matas_unvanlar_all',
+                'gostergeler' => 'matas_gostergeler_all',
+                'dil_gostergeleri' => 'matas_dil_gostergeleri_all',
+                'vergiler' => 'matas_vergiler_' . date('Y'),
+                'sosyal_yardimlar' => 'matas_sosyal_yardimlar_' . date('Y')
+            );
 
-        // Aktif katsayıları yükle
-        $this->katsayilar = $wpdb->get_row(
+            // Cache'den veri yükleme
+            foreach ($cache_keys as $property => $cache_key) {
+                $cached_data = wp_cache_get($cache_key, 'matas');
+                
+                if (false === $cached_data) {
+                    $cached_data = $this->{"fetch_" . $property}();
+                    wp_cache_set($cache_key, $cached_data, 'matas', $this->cache_duration);
+                }
+                
+                $this->$property = $cached_data;
+            }
+
+            // Fallback kontrolleri
+            $this->validate_loaded_data();
+            
+        } catch (Exception $e) {
+            $this->log_error('Data loading failed: ' . $e->getMessage());
+            throw new Exception(__('Veriler yüklenirken bir hata oluştu.', 'matas'));
+        }
+    }
+
+    /**
+     * Katsayıları veritabanından çek
+     */
+    private function fetch_katsayilar() {
+        global $wpdb;
+        
+        $katsayilar = $wpdb->get_row(
             "SELECT * FROM {$wpdb->prefix}matas_katsayilar WHERE aktif = 1 ORDER BY id DESC LIMIT 1",
             ARRAY_A
         );
         
-        // Aktif katsayı yoksa varsayılan değerleri kullan
-        if (!$this->katsayilar) {
-            $this->katsayilar = array(
+        if (!$katsayilar) {
+            return array(
                 'donem' => date('Y') . ' Ocak-Haziran',
                 'aylik_katsayi' => 0.354507,
                 'taban_katsayi' => 7.715,
                 'yan_odeme_katsayi' => 0.0354507
             );
         }
+        
+        return $katsayilar;
+    }
 
-        // Unvanları yükle
-        $this->unvanlar = $wpdb->get_results(
-            "SELECT * FROM {$wpdb->prefix}matas_unvan_bilgileri",
+    /**
+     * Ünvanları veritabanından çek
+     */
+    private function fetch_unvanlar() {
+        global $wpdb;
+        
+        $unvanlar = $wpdb->get_results(
+            "SELECT * FROM {$wpdb->prefix}matas_unvan_bilgileri ORDER BY unvan_adi ASC",
             ARRAY_A
         );
+        
+        return $unvanlar ?: array();
+    }
 
-        // Gösterge puanlarını yükle
-        $this->gostergeler = $wpdb->get_results(
-            "SELECT * FROM {$wpdb->prefix}matas_gosterge_puanlari",
+    /**
+     * Gösterge puanlarını veritabanından çek
+     */
+    private function fetch_gostergeler() {
+        global $wpdb;
+        
+        $gostergeler = $wpdb->get_results(
+            "SELECT * FROM {$wpdb->prefix}matas_gosterge_puanlari ORDER BY derece ASC, kademe ASC",
             ARRAY_A
         );
+        
+        return $gostergeler ?: array();
+    }
 
-        // Dil göstergelerini yükle
-        $this->dil_gostergeleri = $wpdb->get_results(
+    /**
+     * Dil göstergelerini veritabanından çek
+     */
+    private function fetch_dil_gostergeleri() {
+        global $wpdb;
+        
+        $dil_gostergeleri = $wpdb->get_results(
             "SELECT * FROM {$wpdb->prefix}matas_dil_gostergeleri",
             ARRAY_A
         );
+        
+        return $dil_gostergeleri ?: array();
+    }
 
-        // Vergi dilimlerini yükle
+    /**
+     * Vergi dilimlerini veritabanından çek
+     */
+    private function fetch_vergiler() {
+        global $wpdb;
         $current_year = date('Y');
-        $this->vergiler = $wpdb->get_results(
+        
+        $vergiler = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT * FROM {$wpdb->prefix}matas_vergiler WHERE yil = %d ORDER BY dilim ASC",
                 $current_year
@@ -125,9 +162,8 @@ class Matas_Calculator {
             ARRAY_A
         );
         
-        // Vergi dilimleri yoksa varsayılan değerleri kullan
-        if (empty($this->vergiler)) {
-            $this->vergiler = array(
+        if (empty($vergiler)) {
+            return array(
                 array('yil' => $current_year, 'dilim' => 1, 'alt_limit' => 0, 'ust_limit' => 70000, 'oran' => 15),
                 array('yil' => $current_year, 'dilim' => 2, 'alt_limit' => 70000, 'ust_limit' => 150000, 'oran' => 20),
                 array('yil' => $current_year, 'dilim' => 3, 'alt_limit' => 150000, 'ust_limit' => 550000, 'oran' => 27),
@@ -135,9 +171,18 @@ class Matas_Calculator {
                 array('yil' => $current_year, 'dilim' => 5, 'alt_limit' => 1900000, 'ust_limit' => 0, 'oran' => 40),
             );
         }
+        
+        return $vergiler;
+    }
 
-        // Sosyal yardımları yükle
-        $this->sosyal_yardimlar = $wpdb->get_results(
+    /**
+     * Sosyal yardımları veritabanından çek
+     */
+    private function fetch_sosyal_yardimlar() {
+        global $wpdb;
+        $current_year = date('Y');
+        
+        $sosyal_yardimlar = $wpdb->get_results(
             $wpdb->prepare(
                 "SELECT * FROM {$wpdb->prefix}matas_sosyal_yardimlar WHERE yil = %d",
                 $current_year
@@ -145,9 +190,8 @@ class Matas_Calculator {
             ARRAY_A
         );
         
-        // Sosyal yardımlar yoksa varsayılan değerleri kullan
-        if (empty($this->sosyal_yardimlar)) {
-            $this->sosyal_yardimlar = array(
+        if (empty($sosyal_yardimlar)) {
+            return array(
                 array('yil' => $current_year, 'tip' => 'aile_yardimi', 'adi' => 'Aile Yardımı', 'tutar' => 1200),
                 array('yil' => $current_year, 'tip' => 'cocuk_normal', 'adi' => 'Çocuk Yardımı', 'tutar' => 150),
                 array('yil' => $current_year, 'tip' => 'cocuk_0_6', 'adi' => '0-6 Yaş Çocuk Yardımı', 'tutar' => 300),
@@ -157,6 +201,61 @@ class Matas_Calculator {
                 array('yil' => $current_year, 'tip' => 'sendika_yardimi', 'adi' => 'Sendika Yardımı', 'tutar' => 500),
             );
         }
+        
+        return $sosyal_yardimlar;
+    }
+
+    /**
+     * Yüklenen verileri doğrula
+     */
+    private function validate_loaded_data() {
+        $required_fields = array('katsayilar', 'unvanlar', 'gostergeler', 'vergiler', 'sosyal_yardimlar');
+        
+        foreach ($required_fields as $field) {
+            if (!isset($this->$field) || empty($this->$field)) {
+                throw new Exception("Required data missing: {$field}");
+            }
+        }
+    }
+
+    /**
+     * Rate limiting kontrolü
+     */
+    private function check_rate_limit() {
+        $user_ip = $this->get_user_ip();
+        $cache_key = 'matas_rate_limit_' . md5($user_ip);
+        $attempts = wp_cache_get($cache_key, 'matas');
+        
+        if (!$attempts) {
+            $attempts = 0;
+        }
+        
+        $attempts++;
+        
+        if ($attempts > 20) { // 20 istek limiti
+            $this->log_error('Rate limit exceeded for IP: ' . $user_ip);
+            throw new Exception(__('Çok fazla istek gönderildi. Lütfen bekleyiniz.', 'matas'));
+        }
+        
+        wp_cache_set($cache_key, $attempts, 'matas', 300); // 5 dakika
+    }
+
+    /**
+     * Kullanıcı IP adresini güvenli şekilde al
+     */
+    private function get_user_ip() {
+        $ip_fields = array('HTTP_CF_CONNECTING_IP', 'HTTP_X_FORWARDED_FOR', 'HTTP_X_FORWARDED', 'HTTP_FORWARDED_FOR', 'HTTP_FORWARDED', 'REMOTE_ADDR');
+        
+        foreach ($ip_fields as $field) {
+            if (!empty($_SERVER[$field])) {
+                $ip = trim(explode(',', $_SERVER[$field])[0]);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    return $ip;
+                }
+            }
+        }
+        
+        return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     }
 
     /**
@@ -166,139 +265,168 @@ class Matas_Calculator {
      * @return array Hesaplama sonuçları
      */
     public function calculate_salary($params) {
-        // Parametre doğrulama
-        if (!isset($params['unvan']) || !isset($params['derece']) || !isset($params['kademe']) || !isset($params['hizmet_yili'])) {
-            return array(
-                'success' => false,
-                'message' => __('Eksik parametre! Lütfen tüm zorunlu alanları doldurunuz.', 'matas'),
-            );
-        }
-
-        // Unvan bilgilerini bul
-        $unvan = null;
-        foreach ($this->unvanlar as $u) {
-            if ($u['unvan_kodu'] === $params['unvan']) {
-                $unvan = $u;
-                break;
-            }
-        }
-
-        if (!$unvan) {
-            return array(
-                'success' => false,
-                'message' => __('Ünvan bulunamadı! Lütfen geçerli bir ünvan seçiniz.', 'matas'),
-            );
-        }
-
-        // Gösterge puanını bul
-        $gosterge_puani = 0;
-        foreach ($this->gostergeler as $g) {
-            if ((int)$g['derece'] === (int)$params['derece'] && (int)$g['kademe'] === (int)$params['kademe']) {
-                $gosterge_puani = (int)$g['gosterge_puani'];
-                break;
-            }
-        }
-
-        if (!$gosterge_puani) {
-            // Gösterge puanı bulunamadıysa constants.js'deki tabloya bakalım
-            $gosterge_puani_key = $params['derece'] . '-' . $params['kademe'];
-            $default_gosterge_puanlari = apply_filters('matas_default_gosterge_puanlari', array(
-                // 1. Derece
-                '1-1' => 1320, '1-2' => 1380, '1-3' => 1440, '1-4' => 1500, '1-5' => 1560, 
-                '1-6' => 1620, '1-7' => 1680, '1-8' => 1740,
-                
-                // 2. Derece
-                '2-1' => 1155, '2-2' => 1210, '2-3' => 1265, '2-4' => 1320, '2-5' => 1380, 
-                '2-6' => 1440, '2-7' => 1500, '2-8' => 1560,
-                
-                // 3. Derece
-                '3-1' => 1020, '3-2' => 1065, '3-3' => 1110, '3-4' => 1155, '3-5' => 1210, 
-                '3-6' => 1265, '3-7' => 1320, '3-8' => 1380, '3-9' => 1440,
-                
-                // 4. Derece
-                '4-1' => 915, '4-2' => 950, '4-3' => 985, '4-4' => 1020, '4-5' => 1065, 
-                '4-6' => 1110, '4-7' => 1155, '4-8' => 1210, '4-9' => 1265,
-                
-                // 5. Derece
-                '5-1' => 835, '5-2' => 870, '5-3' => 905, '5-4' => 915, '5-5' => 950, 
-                '5-6' => 985, '5-7' => 1020, '5-8' => 1065, '5-9' => 1110,
-                
-                // Diğer dereceler için...
-                // 6. Derece
-                '6-1' => 760, '6-2' => 785, '6-3' => 810, '6-4' => 835, '6-5' => 870, 
-                '6-6' => 905, '6-7' => 915, '6-8' => 950, '6-9' => 985,
-                
-                // 7. Derece
-                '7-1' => 705, '7-2' => 720, '7-3' => 740, '7-4' => 760, '7-5' => 785, 
-                '7-6' => 810, '7-7' => 835, '7-8' => 870, '7-9' => 905,
-                
-                // 8. Derece
-                '8-1' => 660, '8-2' => 675, '8-3' => 690, '8-4' => 705, '8-5' => 720, 
-                '8-6' => 740, '8-7' => 760, '8-8' => 785, '8-9' => 810,
-                
-                // 9. Derece
-                '9-1' => 620, '9-2' => 630, '9-3' => 645, '9-4' => 660, '9-5' => 675, 
-                '9-6' => 690, '9-7' => 705, '9-8' => 720, '9-9' => 740,
-                
-                // 10. Derece
-                '10-1' => 590, '10-2' => 600, '10-3' => 610, '10-4' => 620, '10-5' => 630, 
-                '10-6' => 645, '10-7' => 660, '10-8' => 675, '10-9' => 690,
-                
-                // 11. Derece
-                '11-1' => 560, '11-2' => 570, '11-3' => 580, '11-4' => 590, '11-5' => 600, 
-                '11-6' => 610, '11-7' => 620, '11-8' => 630, '11-9' => 645,
-                
-                // 12. Derece
-                '12-1' => 545, '12-2' => 550, '12-3' => 555, '12-4' => 560, '12-5' => 570, 
-                '12-6' => 580, '12-7' => 590, '12-8' => 600, '12-9' => 610,
-                
-                // 13. Derece
-                '13-1' => 530, '13-2' => 535, '13-3' => 540, '13-4' => 545, '13-5' => 550, 
-                '13-6' => 555, '13-7' => 560, '13-8' => 570, '13-9' => 580,
-                
-                // 14. Derece
-                '14-1' => 515, '14-2' => 520, '14-3' => 525, '14-4' => 530, '14-5' => 535, 
-                '14-6' => 540, '14-7' => 545, '14-8' => 550, '14-9' => 555,
-                
-                // 15. Derece
-                '15-1' => 500, '15-2' => 505, '15-3' => 510, '15-4' => 515, '15-5' => 520, 
-                '15-6' => 525, '15-7' => 530, '15-8' => 535, '15-9' => 540
-            ));
+        try {
+            // Rate limiting kontrolü
+            $this->check_rate_limit();
             
-            if (isset($default_gosterge_puanlari[$gosterge_puani_key])) {
-                $gosterge_puani = $default_gosterge_puanlari[$gosterge_puani_key];
-            } else {
+            // Parametre doğrulama
+            $validation_result = $this->validate_params($params);
+            if (!$validation_result['valid']) {
+                throw new Exception($validation_result['message']);
+            }
+
+            // Verileri yükle
+            $this->load_data();
+
+            // Ünvan bilgilerini bul
+            $unvan = $this->find_unvan($params['unvan']);
+            if (!$unvan) {
+                throw new Exception(__('Ünvan bulunamadı! Lütfen geçerli bir ünvan seçiniz.', 'matas'));
+            }
+
+            // Gösterge puanını bul
+            $gosterge_puani = $this->find_gosterge_puani($params['derece'], $params['kademe']);
+            if (!$gosterge_puani) {
+                throw new Exception(__('Gösterge puanı bulunamadı! Lütfen geçerli bir derece ve kademe seçiniz.', 'matas'));
+            }
+
+            // Hesaplamaları yap
+            $calculation_result = $this->perform_calculations($params, $unvan, $gosterge_puani);
+            
+            // Sonucu logla (debug için)
+            $this->log_calculation($params, $calculation_result);
+            
+            return $calculation_result;
+            
+        } catch (Exception $e) {
+            $this->log_error('Calculation failed: ' . $e->getMessage(), $params);
+            
+            return array(
+                'success' => false,
+                'message' => $e->getMessage(),
+                'error_code' => 'CALCULATION_ERROR'
+            );
+        }
+    }
+
+    /**
+     * Parametreleri doğrula
+     */
+    private function validate_params($params) {
+        $required_fields = array('unvan', 'derece', 'kademe', 'hizmet_yili');
+        
+        foreach ($required_fields as $field) {
+            if (!isset($params[$field]) || $params[$field] === '') {
                 return array(
-                    'success' => false,
-                    'message' => __('Gösterge puanı bulunamadı! Lütfen geçerli bir derece ve kademe seçiniz.', 'matas'),
+                    'valid' => false,
+                    'message' => sprintf(__('%s alanı gereklidir.', 'matas'), $field)
                 );
             }
         }
 
+        // Sayısal değer kontrolü
+        $numeric_fields = array('derece', 'kademe', 'hizmet_yili');
+        foreach ($numeric_fields as $field) {
+            if (!is_numeric($params[$field]) || $params[$field] < 0) {
+                return array(
+                    'valid' => false,
+                    'message' => sprintf(__('%s geçerli bir sayı olmalıdır.', 'matas'), $field)
+                );
+            }
+        }
+
+        // Aralık kontrolü
+        if ($params['derece'] < 1 || $params['derece'] > 15) {
+            return array('valid' => false, 'message' => __('Derece 1-15 arasında olmalıdır.', 'matas'));
+        }
+        
+        if ($params['kademe'] < 1 || $params['kademe'] > 9) {
+            return array('valid' => false, 'message' => __('Kademe 1-9 arasında olmalıdır.', 'matas'));
+        }
+        
+        if ($params['hizmet_yili'] > 50) {
+            return array('valid' => false, 'message' => __('Hizmet yılı 50\'den fazla olamaz.', 'matas'));
+        }
+
+        return array('valid' => true);
+    }
+
+    /**
+     * Ünvan bul
+     */
+    private function find_unvan($unvan_kodu) {
+        foreach ($this->unvanlar as $unvan) {
+            if ($unvan['unvan_kodu'] === $unvan_kodu) {
+                return $unvan;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Gösterge puanını bul
+     */
+    private function find_gosterge_puani($derece, $kademe) {
+        foreach ($this->gostergeler as $gosterge) {
+            if ((int)$gosterge['derece'] === (int)$derece && (int)$gosterge['kademe'] === (int)$kademe) {
+                return (int)$gosterge['gosterge_puani'];
+            }
+        }
+
+        // Fallback - sabit değerler tablosu
+        $fallback_gostergeler = $this->get_fallback_gostergeler();
+        $key = $derece . '-' . $kademe;
+        
+        return isset($fallback_gostergeler[$key]) ? $fallback_gostergeler[$key] : null;
+    }
+
+    /**
+     * Fallback gösterge puanları
+     */
+    private function get_fallback_gostergeler() {
+        return array(
+            '1-1' => 1320, '1-2' => 1380, '1-3' => 1440, '1-4' => 1500, '1-5' => 1560, 
+            '1-6' => 1620, '1-7' => 1680, '1-8' => 1740,
+            '2-1' => 1155, '2-2' => 1210, '2-3' => 1265, '2-4' => 1320, '2-5' => 1380, 
+            '2-6' => 1440, '2-7' => 1500, '2-8' => 1560,
+            '3-1' => 1020, '3-2' => 1065, '3-3' => 1110, '3-4' => 1155, '3-5' => 1210, 
+            '3-6' => 1265, '3-7' => 1320, '3-8' => 1380, '3-9' => 1440,
+            '4-1' => 915, '4-2' => 950, '4-3' => 985, '4-4' => 1020, '4-5' => 1065, 
+            '4-6' => 1110, '4-7' => 1155, '4-8' => 1210, '4-9' => 1265,
+            '5-1' => 835, '5-2' => 870, '5-3' => 905, '5-4' => 915, '5-5' => 950, 
+            '5-6' => 985, '5-7' => 1020, '5-8' => 1065, '5-9' => 1110
+        );
+    }
+
+    /**
+     * Tüm hesaplamaları gerçekleştir
+     */
+    private function perform_calculations($params, $unvan, $gosterge_puani) {
         // Katsayıları al
         $aylik_katsayi = (float)$this->katsayilar['aylik_katsayi'];
         $taban_katsayi = (float)$this->katsayilar['taban_katsayi'];
         $yan_odeme_katsayi = (float)$this->katsayilar['yan_odeme_katsayi'];
-        $donem = sanitize_text_field($this->katsayilar['donem']);
-
-        // Diğer parametreleri hazırla
+        
+        // Parametreleri hazırla
         $hizmet_yili = intval($params['hizmet_yili']);
-        $medeni_hal = isset($params['medeni_hal']) ? sanitize_text_field($params['medeni_hal']) : 'bekar';
-        $es_calisiyor = isset($params['es_calisiyor']) ? sanitize_text_field($params['es_calisiyor']) : 'evet';
-        $cocuk_sayisi = isset($params['cocuk_sayisi']) ? intval($params['cocuk_sayisi']) : 0;
-        $cocuk_06 = isset($params['cocuk_06']) ? intval($params['cocuk_06']) : 0;
-        $engelli_cocuk = isset($params['engelli_cocuk']) ? intval($params['engelli_cocuk']) : 0;
-        $ogrenim_cocuk = isset($params['ogrenim_cocuk']) ? intval($params['ogrenim_cocuk']) : 0;
-        $egitim_durumu = isset($params['egitim_durumu']) ? sanitize_text_field($params['egitim_durumu']) : 'lisans';
-        $dil_seviyesi = isset($params['dil_seviyesi']) ? sanitize_text_field($params['dil_seviyesi']) : 'yok';
-        $dil_kullanimi = isset($params['dil_kullanimi']) ? sanitize_text_field($params['dil_kullanimi']) : 'hayir';
-        $gorev_tazminati = isset($params['gorev_tazminati']) && (bool)$params['gorev_tazminati'];
-        $gelistirme_odenegi = isset($params['gelistirme_odenegi']) && (bool)$params['gelistirme_odenegi'];
-        $asgari_gecim_indirimi = isset($params['asgari_gecim_indirimi']) && (bool)$params['asgari_gecim_indirimi'];
-        $kira_yardimi = isset($params['kira_yardimi']) && (bool)$params['kira_yardimi'];
-        $sendika_uyesi = isset($params['sendika_uyesi']) && (bool)$params['sendika_uyesi'];
+        $medeni_hal = $params['medeni_hal'] ?? 'bekar';
+        $es_calisiyor = $params['es_calisiyor'] ?? 'evet';
+        $cocuk_sayisi = intval($params['cocuk_sayisi'] ?? 0);
+        $cocuk_06 = intval($params['cocuk_06'] ?? 0);
+        $engelli_cocuk = intval($params['engelli_cocuk'] ?? 0);
+        $ogrenim_cocuk = intval($params['ogrenim_cocuk'] ?? 0);
+        $egitim_durumu = $params['egitim_durumu'] ?? 'lisans';
+        $dil_seviyesi = $params['dil_seviyesi'] ?? 'yok';
+        $dil_kullanimi = $params['dil_kullanimi'] ?? 'hayir';
+        
+        // Boolean değerler
+        $gorev_tazminati = !empty($params['gorev_tazminati']);
+        $gelistirme_odenegi = !empty($params['gelistirme_odenegi']);
+        $asgari_gecim_indirimi = !empty($params['asgari_gecim_indirimi']);
+        $kira_yardimi = !empty($params['kira_yardimi']);
+        $sendika_uyesi = !empty($params['sendika_uyesi']);
 
-        // Temel maaş bileşenlerini hesapla
+        // Temel maaş bileşenleri
         $taban_ayligi = $this->calculate_taban_ayligi($gosterge_puani, $aylik_katsayi);
         $ek_gosterge_tutari = $this->calculate_ek_gosterge_tutari($unvan['ekgosterge'], $aylik_katsayi);
         $kidem_ayligi = $this->calculate_kidem_ayligi($hizmet_yili, $aylik_katsayi);
@@ -306,66 +434,43 @@ class Matas_Calculator {
         $ozel_hizmet_tazminati = $this->calculate_ozel_hizmet_tazminati($gosterge_puani, $unvan['ekgosterge'], $aylik_katsayi, $unvan['ozel_hizmet']);
         $is_gucluguzammi = $this->calculate_is_gucluguzammi($unvan['is_guclugu'], $yan_odeme_katsayi);
 
-        // Dil tazminatını hesapla
+        // Ek ödemeler
         $dil_tazminati = $this->calculate_dil_tazminati($dil_seviyesi, $dil_kullanimi, $aylik_katsayi);
-
-        // Ek ödeme hesapla (666 KHK)
         $ek_odeme = $this->calculate_ek_odeme($taban_ayligi, $ek_gosterge_tutari);
-
-        // Eğitim tazminatı hesapla
         $egitim_tazminati = $this->calculate_egitim_tazminati($gorev_tazminati, $taban_ayligi, $ek_gosterge_tutari, $unvan['egitim_tazminat']);
-
-        // Geliştirme ödeneği hesapla
         $gelistirme_odenegi_tutari = $this->calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari);
-
-        // Makam tazminatı hesapla
         $makam_tazminati = $this->calculate_makam_tazminati($unvan['makam_tazminat'], $aylik_katsayi);
-
-        // Lisansüstü eğitim tazminatı hesapla
         $lisansustu_tazminat = $this->calculate_lisansustu_tazminat($egitim_durumu, $taban_ayligi);
 
-        // Sosyal yardımları hesapla
+        // Sosyal yardımlar
         $aile_yardimi = $this->calculate_aile_yardimi($medeni_hal, $es_calisiyor);
         $cocuk_yardimi = $this->calculate_cocuk_yardimi($cocuk_sayisi, $cocuk_06, $engelli_cocuk, $ogrenim_cocuk);
         $kira_yardimi_tutari = $this->calculate_kira_yardimi($kira_yardimi);
         $sendika_yardimi = $this->calculate_sendika_yardimi($sendika_uyesi);
 
-        // Brüt maaşı hesapla
+        // Brüt maaş
         $brut_maas = $taban_ayligi + $ek_gosterge_tutari + $kidem_ayligi + $yan_odeme + 
                      $ozel_hizmet_tazminati + $is_gucluguzammi + $dil_tazminati + 
                      $ek_odeme + $egitim_tazminati + $gelistirme_odenegi_tutari + 
                      $makam_tazminati + $lisansustu_tazminat + $aile_yardimi + 
                      $cocuk_yardimi + $kira_yardimi_tutari + $sendika_yardimi;
 
-        // Kesintileri hesapla
+        // Kesintiler
         $emekli_kesenegi = $this->calculate_emekli_kesenegi($taban_ayligi, $ek_gosterge_tutari, $kidem_ayligi);
         $gss_primi = $this->calculate_gss_primi($taban_ayligi, $ek_gosterge_tutari, $kidem_ayligi);
         
-        // Gelir vergisi matrahını hesapla
         $gelir_vergisi_matrahi = $brut_maas - $emekli_kesenegi - $gss_primi;
-        
-        // Asgari geçim indirimi hesapla
         $agi_tutari = $this->calculate_agi($asgari_gecim_indirimi, $medeni_hal, $es_calisiyor, $cocuk_sayisi);
-        
-        // Gelir vergisini hesapla
         $gelir_vergisi = $this->calculate_gelir_vergisi($gelir_vergisi_matrahi, $agi_tutari);
-        
-        // Damga vergisi hesapla
         $damga_vergisi = $this->calculate_damga_vergisi($brut_maas);
-        
-        // Sendika kesintisi
         $sendika_kesintisi = $this->calculate_sendika_kesintisi($sendika_uyesi, $taban_ayligi);
         
-        // Toplam kesintileri hesapla
         $toplam_kesintiler = $emekli_kesenegi + $gss_primi + $gelir_vergisi + $damga_vergisi + $sendika_kesintisi;
-        
-        // Net maaşı hesapla
         $net_maas = $brut_maas - $toplam_kesintiler;
-        
-        // Sonuçları döndür
+
         return array(
             'success' => true,
-            'donem' => $donem,
+            'donem' => $this->katsayilar['donem'],
             'unvanAdi' => $unvan['unvan_adi'],
             'gostergePuani' => $gosterge_puani,
             'aylikKatsayi' => $aylik_katsayi,
@@ -392,7 +497,7 @@ class Matas_Calculator {
             'gelirVergisi' => round($gelir_vergisi, 2),
             'damgaVergisi' => round($damga_vergisi, 2),
             'sendikaKesintisi' => round($sendika_kesintisi, 2),
-            'kefalet' => 0, // Örnek değer
+            'kefalet' => 0,
             'brutMaas' => round($brut_maas, 2),
             'toplamKesintiler' => round($toplam_kesintiler, 2),
             'netMaas' => round($net_maas, 2)
@@ -400,33 +505,70 @@ class Matas_Calculator {
     }
 
     /**
+     * Hesaplama logla
+     */
+    private function log_calculation($params, $result) {
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('MATAS Calculation - User: ' . $this->get_user_ip() . ' - Net: ' . $result['netMaas']);
+        }
+    }
+
+    /**
+     * Hata logla
+     */
+    private function log_error($message, $context = array()) {
+        $this->errors[] = array(
+            'message' => $message,
+            'context' => $context,
+            'timestamp' => current_time('mysql'),
+            'ip' => $this->get_user_ip()
+        );
+        
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('MATAS Error: ' . $message . ' - Context: ' . json_encode($context));
+        }
+    }
+
+    /**
+     * Cache temizle
+     */
+    public function clear_cache() {
+        $cache_keys = array(
+            'matas_katsayilar_active',
+            'matas_unvanlar_all',
+            'matas_gostergeler_all',
+            'matas_dil_gostergeleri_all',
+            'matas_vergiler_' . date('Y'),
+            'matas_sosyal_yardimlar_' . date('Y')
+        );
+        
+        foreach ($cache_keys as $cache_key) {
+            wp_cache_delete($cache_key, 'matas');
+        }
+    }
+
+    // ... Mevcut hesaplama metodları devam ediyor (calculate_taban_ayligi, vb.)
+    // Bunlar aynı kalacak, sadece error handling eklenecek
+
+    /**
      * Taban aylığı hesaplar
-     *
-     * @param int $gosterge_puani Gösterge puanı
-     * @param float $aylik_katsayi Aylık katsayı
-     * @return float Taban aylığı
      */
     private function calculate_taban_ayligi($gosterge_puani, $aylik_katsayi) {
+        if ($gosterge_puani <= 0 || $aylik_katsayi <= 0) {
+            throw new Exception('Invalid parameters for taban ayligi calculation');
+        }
         return $gosterge_puani * $aylik_katsayi;
     }
 
     /**
      * Ek gösterge tutarını hesaplar
-     *
-     * @param int $ek_gosterge Ek gösterge puanı
-     * @param float $aylik_katsayi Aylık katsayı
-     * @return float Ek gösterge tutarı
      */
     private function calculate_ek_gosterge_tutari($ek_gosterge, $aylik_katsayi) {
-        return $ek_gosterge * $aylik_katsayi;
+        return max(0, $ek_gosterge * $aylik_katsayi);
     }
 
     /**
      * Kıdem aylığı hesaplar
-     *
-     * @param int $hizmet_yili Hizmet yılı
-     * @param float $aylik_katsayi Aylık katsayı
-     * @return float Kıdem aylığı
      */
     private function calculate_kidem_ayligi($hizmet_yili, $aylik_katsayi) {
         return min($hizmet_yili, 25) * 25 * $aylik_katsayi;
@@ -434,23 +576,13 @@ class Matas_Calculator {
 
     /**
      * Yan ödeme hesaplar
-     *
-     * @param int $yan_odeme_puani Yan ödeme puanı
-     * @param float $yan_odeme_katsayi Yan ödeme katsayısı
-     * @return float Yan ödeme tutarı
      */
     private function calculate_yan_odeme($yan_odeme_puani, $yan_odeme_katsayi) {
-        return $yan_odeme_puani * $yan_odeme_katsayi;
+        return max(0, $yan_odeme_puani * $yan_odeme_katsayi);
     }
 
     /**
      * Özel hizmet tazminatı hesaplar
-     *
-     * @param int $gosterge_puani Gösterge puanı
-     * @param int $ek_gosterge Ek gösterge puanı
-     * @param float $aylik_katsayi Aylık katsayı
-     * @param int $ozel_hizmet_yuzdesi Özel hizmet yüzdesi
-     * @return float Özel hizmet tazminatı
      */
     private function calculate_ozel_hizmet_tazminati($gosterge_puani, $ek_gosterge, $aylik_katsayi, $ozel_hizmet_yuzdesi) {
         return ($gosterge_puani + $ek_gosterge) * $aylik_katsayi * $ozel_hizmet_yuzdesi / 100;
@@ -458,59 +590,38 @@ class Matas_Calculator {
 
     /**
      * İş güçlüğü zammı hesaplar
-     *
-     * @param int $is_guclugu İş güçlüğü puanı
-     * @param float $yan_odeme_katsayi Yan ödeme katsayısı
-     * @return float İş güçlüğü zammı
      */
     private function calculate_is_gucluguzammi($is_guclugu, $yan_odeme_katsayi) {
-        return $is_guclugu * $yan_odeme_katsayi;
+        return max(0, $is_guclugu * $yan_odeme_katsayi);
     }
 
-/**
+    /**
      * Dil tazminatı hesaplar
-     *
-     * @param string $dil_seviyesi Dil seviyesi (a, b, c)
-     * @param string $dil_kullanimi Dil kullanım durumu (evet, hayir)
-     * @param float $aylik_katsayi Aylık katsayı
-     * @return float Dil tazminatı
      */
     private function calculate_dil_tazminati($dil_seviyesi, $dil_kullanimi, $aylik_katsayi) {
         if ($dil_seviyesi === 'yok') return 0;
         
-        // Önce dil göstergelerinden kontrol et
+        // Dil göstergelerinden bul
         foreach ($this->dil_gostergeleri as $dg) {
             if ($dg['seviye_kodu'] === $dil_seviyesi && $dg['kullanim'] === $dil_kullanimi) {
                 return $dg['gosterge'] * $aylik_katsayi;
             }
         }
         
-        // Dil göstergesi bulunamadıysa varsayılanları kullan
-        $dil_gosterge = 0;
+        // Fallback değerler
+        $dil_gosterge_map = array(
+            'a_evet' => 1500, 'b_evet' => 600, 'c_evet' => 300,
+            'a_hayir' => 750, 'b_hayir' => 300, 'c_hayir' => 150
+        );
         
-        if ($dil_seviyesi === 'a' && $dil_kullanimi === 'evet') {
-            $dil_gosterge = 1500;
-        } else if ($dil_seviyesi === 'b' && $dil_kullanimi === 'evet') {
-            $dil_gosterge = 600;
-        } else if ($dil_seviyesi === 'c' && $dil_kullanimi === 'evet') {
-            $dil_gosterge = 300;
-        } else if ($dil_seviyesi === 'a' && $dil_kullanimi === 'hayir') {
-            $dil_gosterge = 750;
-        } else if ($dil_seviyesi === 'b' && $dil_kullanimi === 'hayir') {
-            $dil_gosterge = 300;
-        } else if ($dil_seviyesi === 'c' && $dil_kullanimi === 'hayir') {
-            $dil_gosterge = 150;
-        }
+        $key = $dil_seviyesi . '_' . $dil_kullanimi;
+        $dil_gosterge = isset($dil_gosterge_map[$key]) ? $dil_gosterge_map[$key] : 0;
         
         return $dil_gosterge * $aylik_katsayi;
     }
 
     /**
      * Ek ödeme (666 KHK) hesaplar
-     *
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @return float Ek ödeme tutarı
      */
     private function calculate_ek_odeme($taban_ayligi, $ek_gosterge_tutari) {
         return ($taban_ayligi + $ek_gosterge_tutari) * 0.20;
@@ -518,12 +629,6 @@ class Matas_Calculator {
 
     /**
      * Eğitim-Öğretim tazminatı hesaplar
-     *
-     * @param bool $gorev_tazminati Eğitim-öğretim tazminatı alıp almadığı
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @param float $egitim_tazminat_orani Eğitim tazminatı oranı
-     * @return float Eğitim-öğretim tazminatı
      */
     private function calculate_egitim_tazminati($gorev_tazminati, $taban_ayligi, $ek_gosterge_tutari, $egitim_tazminat_orani) {
         if (!$gorev_tazminati) return 0;
@@ -532,25 +637,14 @@ class Matas_Calculator {
 
     /**
      * Geliştirme ödeneği hesaplar
-     *
-     * @param bool $gelistirme_odenegi Geliştirme ödeneği alıp almadığı
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @return float Geliştirme ödeneği tutarı
      */
     private function calculate_gelistirme_odenegi($gelistirme_odenegi, $taban_ayligi, $ek_gosterge_tutari) {
         if (!$gelistirme_odenegi) return 0;
-        // Örnek oran - gerçek projede bir tabloda saklanabilir
-        $gelistirme_orani = 0.10;
-        return ($taban_ayligi + $ek_gosterge_tutari) * $gelistirme_orani;
+        return ($taban_ayligi + $ek_gosterge_tutari) * 0.10;
     }
 
     /**
      * Makam tazminatı hesaplar
-     *
-     * @param int $makam_tazminat_puani Makam tazminatı puanı
-     * @param float $aylik_katsayi Aylık katsayı
-     * @return float Makam tazminatı
      */
     private function calculate_makam_tazminati($makam_tazminat_puani, $aylik_katsayi) {
         if ($makam_tazminat_puani <= 0) return 0;
@@ -559,132 +653,71 @@ class Matas_Calculator {
 
     /**
      * Lisansüstü tazminatı hesaplar
-     *
-     * @param string $egitim_durumu Eğitim durumu (lisans, yuksek_lisans, doktora)
-     * @param float $taban_ayligi Taban aylığı
-     * @return float Lisansüstü eğitim tazminatı
      */
     private function calculate_lisansustu_tazminat($egitim_durumu, $taban_ayligi) {
-        if ($egitim_durumu === 'yuksek_lisans') {
-            return $taban_ayligi * 0.05;
-        } else if ($egitim_durumu === 'doktora') {
-            return $taban_ayligi * 0.15;
-        }
-        return 0;
+        $rates = array('yuksek_lisans' => 0.05, 'doktora' => 0.15);
+        return isset($rates[$egitim_durumu]) ? $taban_ayligi * $rates[$egitim_durumu] : 0;
     }
 
     /**
      * Aile yardımı hesaplar
-     *
-     * @param string $medeni_hal Medeni hal (evli, bekar)
-     * @param string $es_calisiyor Eşin çalışma durumu (evet, hayir)
-     * @return float Aile yardımı
      */
     private function calculate_aile_yardimi($medeni_hal, $es_calisiyor) {
         if ($medeni_hal === 'evli' && $es_calisiyor === 'hayir') {
-            // Sosyal yardımlar tablosundan bul
-            foreach ($this->sosyal_yardimlar as $sy) {
-                if ($sy['tip'] === 'aile_yardimi') {
-                    return (float)$sy['tutar'];
-                }
-            }
-            
-            // Bulunamazsa varsayılan değer
-            return 1200.0;
+            return $this->get_sosyal_yardim_tutari('aile_yardimi', 1200);
         }
         return 0;
     }
 
     /**
      * Çocuk yardımı hesaplar
-     *
-     * @param int $cocuk_sayisi Toplam çocuk sayısı
-     * @param int $cocuk_06 0-6 yaş arası çocuk sayısı
-     * @param int $engelli_cocuk Engelli çocuk sayısı
-     * @param int $ogrenim_cocuk Öğrenim gören çocuk sayısı
-     * @return float Çocuk yardımı
      */
     private function calculate_cocuk_yardimi($cocuk_sayisi, $cocuk_06, $engelli_cocuk, $ogrenim_cocuk) {
-        if ($cocuk_sayisi <= 0) {
-            return 0;
-        }
+        if ($cocuk_sayisi <= 0) return 0;
         
-        // Normal çocuk sayısını hesapla
         $normal_cocuk = max(0, $cocuk_sayisi - $cocuk_06 - $engelli_cocuk - $ogrenim_cocuk);
         
-        // Varsayılan değerler
-        $normal_yardim = 150.0;
-        $yardim_06 = 300.0;
-        $yardim_engelli = 600.0;
-        $yardim_ogrenim = 250.0;
+        $tutarlar = array(
+            'normal' => $this->get_sosyal_yardim_tutari('cocuk_normal', 150),
+            '06' => $this->get_sosyal_yardim_tutari('cocuk_0_6', 300),
+            'engelli' => $this->get_sosyal_yardim_tutari('cocuk_engelli', 600),
+            'ogrenim' => $this->get_sosyal_yardim_tutari('cocuk_ogrenim', 250)
+        );
         
-        // Sosyal yardımlar tablosundan bul
-        foreach ($this->sosyal_yardimlar as $sy) {
-            if ($sy['tip'] === 'cocuk_normal') {
-                $normal_yardim = (float)$sy['tutar'];
-            } else if ($sy['tip'] === 'cocuk_0_6') {
-                $yardim_06 = (float)$sy['tutar'];
-            } else if ($sy['tip'] === 'cocuk_engelli') {
-                $yardim_engelli = (float)$sy['tutar'];
-            } else if ($sy['tip'] === 'cocuk_ogrenim') {
-                $yardim_ogrenim = (float)$sy['tutar'];
-            }
-        }
-        
-        // Toplamı hesapla
-        return $normal_cocuk * $normal_yardim + 
-               $cocuk_06 * $yardim_06 + 
-               $engelli_cocuk * $yardim_engelli + 
-               $ogrenim_cocuk * $yardim_ogrenim;
+        return $normal_cocuk * $tutarlar['normal'] + 
+               $cocuk_06 * $tutarlar['06'] + 
+               $engelli_cocuk * $tutarlar['engelli'] + 
+               $ogrenim_cocuk * $tutarlar['ogrenim'];
     }
 
     /**
      * Kira yardımı hesaplar
-     *
-     * @param bool $kira_yardimi Kira yardımı alıp almadığı
-     * @return float Kira yardımı tutarı
      */
     private function calculate_kira_yardimi($kira_yardimi) {
-        if (!$kira_yardimi) return 0;
-        
-        // Sosyal yardımlar tablosundan bul
-        foreach ($this->sosyal_yardimlar as $sy) {
-            if ($sy['tip'] === 'kira_yardimi') {
-                return (float)$sy['tutar'];
-            }
-        }
-        
-        // Bulunamazsa varsayılan değer
-        return 2000.0;
+        return $kira_yardimi ? $this->get_sosyal_yardim_tutari('kira_yardimi', 2000) : 0;
     }
 
     /**
      * Sendika yardımı hesaplar
-     *
-     * @param bool $sendika_uyesi Sendika üyesi olup olmadığı
-     * @return float Sendika yardımı tutarı
      */
     private function calculate_sendika_yardimi($sendika_uyesi) {
-        if (!$sendika_uyesi) return 0;
-        
-        // Sosyal yardımlar tablosundan bul
+        return $sendika_uyesi ? $this->get_sosyal_yardim_tutari('sendika_yardimi', 500) : 0;
+    }
+
+    /**
+     * Sosyal yardım tutarını bul
+     */
+    private function get_sosyal_yardim_tutari($tip, $default_value) {
         foreach ($this->sosyal_yardimlar as $sy) {
-            if ($sy['tip'] === 'sendika_yardimi') {
+            if ($sy['tip'] === $tip) {
                 return (float)$sy['tutar'];
             }
         }
-        
-        // Bulunamazsa varsayılan değer
-        return 500.0;
+        return $default_value;
     }
 
     /**
      * Emekli keseneği hesaplar
-     *
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @param float $kidem_ayligi Kıdem aylığı
-     * @return float Emekli keseneği
      */
     private function calculate_emekli_kesenegi($taban_ayligi, $ek_gosterge_tutari, $kidem_ayligi) {
         $emekli_matrahi = $taban_ayligi + $ek_gosterge_tutari + $kidem_ayligi;
@@ -693,61 +726,40 @@ class Matas_Calculator {
 
     /**
      * Genel sağlık sigortası hesaplar
-     *
-     * @param float $taban_ayligi Taban aylığı
-     * @param float $ek_gosterge_tutari Ek gösterge tutarı
-     * @param float $kidem_ayligi Kıdem aylığı
-     * @return float Genel sağlık sigortası
      */
     private function calculate_gss_primi($taban_ayligi, $ek_gosterge_tutari, $kidem_ayligi) {
         $emekli_matrahi = $taban_ayligi + $ek_gosterge_tutari + $kidem_ayligi;
         return $emekli_matrahi * 0.05;
     }
-    
+
     /**
-     * Asgari Geçim İndirimi (AGİ) hesaplar
-     * 
-     * @param bool $asgari_gecim_indirimi AGİ alıp almadığı
-     * @param string $medeni_hal Medeni hal (evli, bekar)
-     * @param string $es_calisiyor Eşin çalışma durumu (evet, hayir)
-     * @param int $cocuk_sayisi Toplam çocuk sayısı
-     * @return float AGİ tutarı
+     * Asgari Geçim İndirimi hesaplar
      */
     private function calculate_agi($asgari_gecim_indirimi, $medeni_hal, $es_calisiyor, $cocuk_sayisi) {
         if (!$asgari_gecim_indirimi) return 0;
         
-        // Temel oran
         $agi_orani = 0.50; // Bekar
         
-        // Eş için
         if ($medeni_hal === 'evli' && $es_calisiyor === 'hayir') {
             $agi_orani += 0.10;
         }
         
-        // Çocuklar için
-        if ($cocuk_sayisi >= 1) $agi_orani += 0.075;
-        if ($cocuk_sayisi >= 2) $agi_orani += 0.075;
-        if ($cocuk_sayisi >= 3) $agi_orani += 0.10;
-        if ($cocuk_sayisi >= 4) $agi_orani += 0.05;
+        $cocuk_oranlari = array(1 => 0.075, 2 => 0.075, 3 => 0.10, 4 => 0.05);
+        for ($i = 1; $i <= min($cocuk_sayisi, 4); $i++) {
+            $agi_orani += $cocuk_oranlari[$i];
+        }
         
-        // 2025 için tahmini asgari ücret
         $asgari_ucret = apply_filters('matas_asgari_ucret', 17002.0);
-        
         return $asgari_ucret * $agi_orani * 0.15;
     }
 
     /**
      * Gelir vergisi hesaplar
-     *
-     * @param float $matrah Gelir vergisi matrahı
-     * @param float $agi_tutari AGİ tutarı
-     * @return float Gelir vergisi
      */
     private function calculate_gelir_vergisi($matrah, $agi_tutari) {
         $vergi = 0;
         $kalan_matrah = $matrah;
         
-        // Vergi dilimlerini küçükten büyüğe sırala
         usort($this->vergiler, function($a, $b) {
             return (int)$a['dilim'] - (int)$b['dilim'];
         });
@@ -757,36 +769,26 @@ class Matas_Calculator {
             $ust_limit = (float)$dilim['ust_limit'];
             $oran = (float)$dilim['oran'] / 100;
             
-            // Son dilim veya sonsuz limit
             if ($index === count($this->vergiler) - 1 || $ust_limit === 0) {
                 $vergi += $kalan_matrah * $oran;
                 break;
             }
             
-            // Matraha göre vergi hesapla
             $hesaplanacak_matrah = min($kalan_matrah, $ust_limit - $alt_limit);
             
-            if ($hesaplanacak_matrah <= 0) {
-                break;
-            }
+            if ($hesaplanacak_matrah <= 0) break;
             
             $vergi += $hesaplanacak_matrah * $oran;
             $kalan_matrah -= $hesaplanacak_matrah;
             
-            if ($kalan_matrah <= 0) {
-                break;
-            }
+            if ($kalan_matrah <= 0) break;
         }
         
-        // AGİ'yi gelir vergisinden düş, negatif olmasını engelle
         return max(0, $vergi - $agi_tutari);
     }
 
     /**
      * Damga vergisi hesaplar
-     *
-     * @param float $brut_maas Brüt maaş
-     * @return float Damga vergisi
      */
     private function calculate_damga_vergisi($brut_maas) {
         return $brut_maas * 0.00759;
@@ -794,10 +796,6 @@ class Matas_Calculator {
 
     /**
      * Sendika kesintisi hesaplar
-     *
-     * @param bool $sendika_uyesi Sendika üyesi olup olmadığı
-     * @param float $taban_ayligi Taban aylığı
-     * @return float Sendika kesintisi
      */
     private function calculate_sendika_kesintisi($sendika_uyesi, $taban_ayligi) {
         return $sendika_uyesi ? $taban_ayligi * 0.01 : 0;
