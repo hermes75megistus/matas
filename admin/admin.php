@@ -994,5 +994,3 @@ class Matas_Admin {
         return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     }
 
-    // Diğer AJAX işleyicileri (save_vergi_dilimi, save_sosyal_yardim, vb.) 
-    // aynı pattern ile iyileştirilebilir...
